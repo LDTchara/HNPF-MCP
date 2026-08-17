@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>11</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>CS8500;MSB3277</NoWarn>
+    <PlatformTarget>x86</PlatformTarget>
+    <AssemblyName>HnpfMcpConnector</AssemblyName>
+    <RootNamespace>HnpfMcpConnector</RootNamespace>
+    <AssemblyTitle>HnpfMcpConnector</AssemblyTitle>
+    <Description>Generic L3 connector: exposes mod runtime state to HNPF-MCP via [McpTool], using runtime reflection (soft dependency — no compile-time mod references). Mods stay untouched.</Description>
+    <Company>LDTchara</Company>
+    <Product>HnpfMcpConnector</Product>
+    <Version>0.1.0</Version>
+    <FileVersion>0.1.0</FileVersion>
+    <AssemblyVersion>0.1.0</AssemblyVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="0Harmony">
+      <HintPath>libs\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Core">
+      <HintPath>libs\BepInEx.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Hacknet">
+      <HintPath>libs\BepInEx.Hacknet.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Hacknet">
+      <HintPath>libs\HacknetPathfinder.exe</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="PathfinderAPI">
+      <HintPath>libs\PathfinderAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="HnpfMcpBridge">
+      <HintPath>libs\HnpfMcpBridge.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
