@@ -427,3 +427,9 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# HNPF-MCP 构建产物与本机数据
+**/bin/
+**/obj/
+snapshots/
+audit.log

@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/bridge/">
+    <Project Path="bridge/HnpfMcpBridge.csproj" />
+  </Folder>
+  <Folder Name="/connector/">
+    <Project Path="connector/HnpfMcpConnector.csproj" />
+  </Folder>
+</Solution>
