@@ -558,21 +558,24 @@ function scheduleAutoEnterExtension(ext, { username, pass } = {}) {
 
 server.tool(
   "launch_game",
-  "启动 Hacknet 游戏（正常启动到主菜单）。可选 ext 指定扩展文件夹名：启动后后台自动经主菜单进扩展（menu.enter_extension，插件真正加载；-extstart 直进已弃用——会跳过主菜单导致扩展插件加载异常）；username 可选（进扩展用新账号）。dryRun=true 只返回将执行的命令不启动。",
+  "启动 Hacknet 游戏（正常启动到主菜单，默认带 -enabledebug -enablefc 调试参数）。可选 ext 指定扩展文件夹名：启动后后台自动经主菜单进扩展（menu.enter_extension，插件真正加载；-extstart 直进已弃用——会跳过主菜单导致扩展插件加载异常）；username 可选（进扩展用新账号）；console=true 用 Start-Process 带控制台启动（CEF 不冒空窗口、显示游戏日志）；debug=false 去掉调试参数。dryRun=true 只返回将执行的命令不启动。",
   {
     ext: z.string().optional().describe("扩展文件夹名（如 KernelExtensionTEST123123）：启动后自动经主菜单进扩展"),
     username: z.string().optional().describe("进扩展用的新账号名（配合 ext；省略默认 mcp）"),
     console: z.boolean().optional().describe("true=带控制台启动（Start-Process，CEF 不再冒空窗口，控制台显示游戏日志；默认 false 直接启动）"),
+    debug: z.boolean().optional().describe("默认 true 带 -enabledebug -enablefc（游戏调试模式）；false 则不带"),
     dryRun: z.boolean().optional().describe("true=只返回命令不实际启动"),
   },
-  async ({ ext, username, dryRun }) => {
+  async ({ ext, username, console, debug, dryRun }) => {
     // 防多开：进程检测（tasklist），游戏已在跑则拒绝
     if (!dryRun && (await isGameRunning())) {
       return {
         content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "游戏已在运行（Hacknet.exe 进程存在），请勿重复启动" }, null, 2) }],
       };
     }
-    const args = [];   // 注意：不再用 -extstart（跳主菜单 → 插件加载异常）；进扩展走主菜单 menu.enter_extension
+    // 注意：不再用 -extstart（跳主菜单 → 插件加载异常）；进扩展走主菜单 menu.enter_extension
+    // 默认带调试参数（-enabledebug -enablefc，与 debugtest.bat 一致），debug=false 可关
+    const args = debug === false ? [] : ["-enabledebug", "-enablefc"];
     const exe = GAME_EXE;
     const exists = fs.existsSync(exe);
     if (!exists && !dryRun) {
