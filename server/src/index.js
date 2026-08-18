@@ -544,7 +544,19 @@ function scheduleAutoEnterExtension(ext, { username, pass } = {}) {
         // 若已进扩展（响应非 ok）则停止
         const r = await bridge.call("menu.enter_extension", { ext, username, pass }, 10000);
         if (r?.ok) {
-          process.stderr.write(`[hnpf] 已自动进扩展 ${ext}（主菜单路径，插件正常加载）\n`);
+          // 防假阳性：menu.enter_extension 返回 ok 不代表真进扩展（旧 bug：同名账号 AddUser false
+          // 时游戏报 "Error auto-loading Extension" 但 bridge 仍返回 ok）——延迟 3s 验证 OS 会话
+          await new Promise((r2) => setTimeout(r2, 3000));
+          try {
+            const st = await bridge.call("state.get", {}, 5000);
+            if (st?.thisComputerIP) {
+              process.stderr.write(`[hnpf] 已自动进扩展 ${ext}（主菜单路径，验证通过）\n`);
+            } else {
+              process.stderr.write(`[hnpf] 警告：menu.enter_extension 返回 ok 但未检测到扩展会话——账号/插件加载可能失败（假阳性）\n`);
+            }
+          } catch {
+            process.stderr.write(`[hnpf] 警告：menu.enter_extension 返回 ok 但 state.get 不可用——可能未真正进扩展\n`);
+          }
           return;
         }
         // 有响应说明 MenuExecutor 已处理（成功或失败）——已过主菜单阶段，停止，避免重复建账号
