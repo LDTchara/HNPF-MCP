@@ -416,6 +416,16 @@ server.tool(
   }
 );
 
+server.tool(
+  "exit_to_menu",
+  "模拟顶栏 X → Exit to Menu：退出当前扩展会话回主菜单（触发扩展插件卸载 + MainMenu.resetOS + SaveFileManager.Init）——之后可用 menu_load_extension_save 读其他账号，无需重启游戏",
+  {},
+  async () => {
+    const r = await call("game.exit_to_menu");
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
 // ---------------- 存档快照（HNPF-MCP/snapshots/，项目内，不碰原版存档路径） ----------------
 const SNAPSHOT_DIR = path.join(__dirname, "..", "..", "snapshots");
 const SNAPSHOT_KEEP = 20;

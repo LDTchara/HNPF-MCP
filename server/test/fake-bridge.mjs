@@ -82,6 +82,8 @@ function fakeResult(method, params = {}) {
       return { ok: true, mode: "new account", username: params.username || "mcp" };
     case "menu.load_extension_save":
       return { ok: true, mode: "load save", username: params.username, userFile: params.userFile };
+    case "game.exit_to_menu":
+      return { ok: true, message: "exit to main menu requested" };
     case "events.get":
       return { events: [{ id: 1, event: "node.connected", data: { ip: "10.0.0.2" }, t: "12:00:00" }], nextId: 2 };
     case "registry.list":

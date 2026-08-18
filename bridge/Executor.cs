@@ -127,6 +127,13 @@ public static partial class Executor
                 os.saveGame();
                 return new Dictionary<string, object> { ["ok"] = true, ["message"] = "save requested" };
 
+            case "game.exit_to_menu":
+                // 模拟顶栏 X → "Exit to Menu"：os.quitGame（public）→ HasExitedAndEnded=true（触发
+                // 扩展插件卸载）→ MainMenu.resetOS + AddScreen(new MainMenu) + SaveFileManager.Init
+                // → 之后可 menu_load_extension_save 读其他账号（无需重启游戏）
+                os.quitGame(null, null);
+                return new Dictionary<string, object> { ["ok"] = true, ["message"] = "exit to main menu requested" };
+
             case "port.open":
                 return PortChange(os, Str(p, "ip"), IntParam(p, "port"), true);
 
