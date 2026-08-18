@@ -541,7 +541,7 @@ function scheduleAutoEnterExtension(ext, { username, pass } = {}) {
         await ensureBridge();
         // 主菜单阶段 MenuExecutor 处理 menu.enter_extension；进扩展后 OS 会话接管，
         // 若已进扩展（响应非 ok）则停止
-        const r = await bridge.call("menu.enter_extension", { ext, username, pass }, 60000);
+        const r = await bridge.call("menu.enter_extension", { ext, username, pass }, 120000);
         if (r?.ok) {
           process.stderr.write(`[hnpf] 已自动进扩展 ${ext}（主菜单路径，插件正常加载）\n`);
           return;
@@ -562,7 +562,7 @@ server.tool(
   {
     ext: z.string().optional().describe("扩展文件夹名（如 KernelExtensionTEST123123）：启动后自动经主菜单进扩展"),
     username: z.string().optional().describe("进扩展用的新账号名（配合 ext；省略默认 mcp）"),
-    console: z.boolean().optional().describe("true=带控制台启动（Start-Process，CEF 不再冒空窗口，控制台显示游戏日志；默认 false 直接启动）"),
+    console: z.boolean().optional().describe("默认 true 带控制台启动（Start-Process，CEF 不冒空窗口、控制台显示游戏日志；false=直接 spawn 降级，有 CEF 空窗副作用）"),
     debug: z.boolean().optional().describe("默认 true 带 -enabledebug -enablefc（游戏调试模式）；false 则不带"),
     dryRun: z.boolean().optional().describe("true=只返回命令不实际启动"),
   },
@@ -585,26 +585,43 @@ server.tool(
       return { content: [{ type: "text", text: JSON.stringify({ ok: true, dryRun: true, exe, args, cmd: `"${exe}" ${args.join(" ")}` }, null, 2) }] };
     }
     // Hacknet.exe 与 cefprocess.exe 都是 Console 子系统：
-    // - 默认（console=false）：直接 spawn（detached + stdio 管道）——最稳、MCP 退出游戏独立存活；
-    //   副作用：游戏 spawn 的 CEF 子进程因无控制台继承会各自弹空控制台窗口（无害）
-    // - console=true：PowerShell Start-Process（console 程序默认创建新控制台）——游戏有控制台 →
-    //   CEF 子进程继承 → 不再冒空窗口，且控制台显示 KE banner/游戏日志（类似 debugtest.bat 体验）；
+    // - 默认（console !== false）：PowerShell Start-Process（console 程序默认创建新控制台）——
+    //   游戏有控制台 → CEF 子进程继承 → 不再冒空窗口，且控制台显示 KE banner/游戏日志（类似 debugtest.bat）；
     //   Start-Process 异步，PowerShell 立即退出，游戏独立存活
+    // - console=false：直接 spawn（detached + stdio 管道）——最稳降级；副作用：CEF 子进程无控制台
+    //   继承会各自弹空控制台窗口（无害）
+    // - 兜底：console 模式 12s 内检测游戏未起（如环境禁止 spawn PowerShell 启动 GUI）→ 自动回退直接 spawn
+    const useConsole = console !== false;
     let child, modeNote;
-    if (console) {
+    if (useConsole) {
       const argList = args.length > 0
         ? `@(${args.map((a) => `"${a}"`).join(", ")})`
         : "@()";
       const ps = `Start-Process -FilePath "${exe}" -ArgumentList ${argList} -WorkingDirectory "${path.dirname(exe)}" -PassThru | Out-Null`;
+      // 实测（2026-08-18 DeepSeek 宿主）：spawn powershell 带 detached:true + windowsHide:true
+      // + stdio:ignore 时，Start-Process **拉不起游戏**（无控制台 + CEF 空窗）——三者全去后正常
+      // （powershell 是 node 子进程，Start-Process 创建的游戏进程独立存活，node 退出不影响）
       child = spawn("powershell.exe", ["-NoProfile", "-Command", ps], {
-        detached: true, stdio: "ignore", windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
       });
-      modeNote = "带控制台启动（Start-Process，CEF 不再冒空窗口，控制台显示游戏日志）";
+      child.stderr?.on("data", (d) => process.stderr.write("[hnpf-console] " + d));
+      modeNote = "带控制台启动（Start-Process，CEF 不冒空窗口，控制台显示游戏日志）";
+      // 兜底：Start-Process 未生效（沙箱/策略禁止）时自动回退直接 spawn
+      setTimeout(() => {
+        isGameRunning().then((running) => {
+          if (!running) {
+            process.stderr.write("[hnpf] Start-Process 未拉起游戏，回退直接 spawn\n");
+            const fb = spawn(exe, args, { detached: true, stdio: ["ignore", "pipe", "pipe"], cwd: path.dirname(exe) });
+            fb.stdout?.on("data", () => { }); fb.stderr?.on("data", () => { });
+            fb.unref();
+          }
+        });
+      }, 12000);
     } else {
       child = spawn(exe, args, { detached: true, stdio: ["ignore", "pipe", "pipe"], cwd: path.dirname(exe) });
       child.stdout?.on("data", () => { /* 丢弃，防缓冲区满 */ });
       child.stderr?.on("data", () => { });
-      modeNote = "直接启动（若见 cefprocess 空控制台窗口属正常，可忽略或改用 console:true）";
+      modeNote = "直接启动（若见 cefprocess 空控制台窗口属正常，可忽略）";
     }
     child.stdout?.on("data", () => { /* 丢弃，防缓冲区满 */ });
     child.stderr?.on("data", () => { });
