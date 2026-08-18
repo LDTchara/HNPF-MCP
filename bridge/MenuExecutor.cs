@@ -1,4 +1,5 @@
 using Hacknet;
+using Hacknet.PlatformAPI.Storage;
 using HarmonyLib;
 using System.IO;
 using System.Reflection;
@@ -67,7 +68,11 @@ public static class MenuExecutor
         // 3. 兜底：万一插件加载失败，至少注册 [McpTool]
         TryLoadExtensionPlugins(ext);
 
-        // 4. 创建账户进扩展（官方入口）
+        // 4. 创建账户进扩展（官方入口）。对齐原版 -extstart（Game1.LoadInitialScreens：
+        //    DeleteUser("test") + CreateNewAccountForExtensionAndStart）：先删同名旧账号，
+        //    避免 AddUser 因用户已存在返回 false → 走 else 分支报 "Error auto-loading Extension"
+        //    且 EnterExtension 不检查结果仍返回 ok（MCP 报成功但游戏实际没进扩展）
+        try { SaveFileManager.DeleteUser(username); } catch { }
         MainMenu.CreateNewAccountForExtensionAndStart(username, pass, menu.ScreenManager, menu, null);
 
         return new Dictionary<string, object>
