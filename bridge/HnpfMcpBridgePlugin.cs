@@ -23,7 +23,7 @@ public class HnpfMcpBridgePlugin : HacknetPlugin
     public const string ModName = "HNPF-MCP-Bridge";
     public const string Version = "0.1.0";
     /// <summary>构建自检版本：每次改动递增，ping/get_state 可见，用于确认游戏里跑的是不是最新 DLL。</summary>
-    public const string BuildVersion = "2026-08-17-1719";
+    public const string BuildVersion = "2026-08-18-1754";
 
     private static HnpfMcpBridgePlugin _instance;
 
