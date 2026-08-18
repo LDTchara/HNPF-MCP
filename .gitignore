@@ -433,3 +433,4 @@ FodyWeavers.xsd
 **/obj/
 snapshots/
 audit.log
+temp/
