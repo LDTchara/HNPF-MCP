@@ -535,13 +535,14 @@ function isGameRunning() {
 function scheduleAutoEnterExtension(ext, { username, pass } = {}) {
   (async () => {
     let attempts = 0;
-    while (attempts++ < 30) {   // 最长 ~150s
+    // HN 是老游戏，加载很快：轮询 5s×6 次 = 最长 30s；menu 处理 call 超时 10s
+    while (attempts++ < 6) {
       await new Promise((r) => setTimeout(r, 5000));
       try {
         await ensureBridge();
         // 主菜单阶段 MenuExecutor 处理 menu.enter_extension；进扩展后 OS 会话接管，
         // 若已进扩展（响应非 ok）则停止
-        const r = await bridge.call("menu.enter_extension", { ext, username, pass }, 120000);
+        const r = await bridge.call("menu.enter_extension", { ext, username, pass }, 10000);
         if (r?.ok) {
           process.stderr.write(`[hnpf] 已自动进扩展 ${ext}（主菜单路径，插件正常加载）\n`);
           return;
@@ -552,7 +553,7 @@ function scheduleAutoEnterExtension(ext, { username, pass } = {}) {
         // 管道未就绪/超时（主菜单未到）→ 继续等
       }
     }
-    process.stderr.write("[hnpf] 自动进扩展超时（150s）——游戏可能未启动成功，请手动 menu_enter_extension\n");
+    process.stderr.write("[hnpf] 自动进扩展超时（30s）——游戏可能未启动成功或进扩展出错，请手动 menu_enter_extension\n");
   })();
 }
 
@@ -606,7 +607,7 @@ server.tool(
       });
       child.stderr?.on("data", (d) => process.stderr.write("[hnpf-console] " + d));
       modeNote = "带控制台启动（Start-Process，CEF 不冒空窗口，控制台显示游戏日志）";
-      // 兜底：Start-Process 未生效（沙箱/策略禁止）时自动回退直接 spawn
+      // 兜底：Start-Process 未生效（沙箱/策略禁止）时自动回退直接 spawn；HN 加载快，15s 内未起即回退
       setTimeout(() => {
         isGameRunning().then((running) => {
           if (!running) {
@@ -616,7 +617,7 @@ server.tool(
             fb.unref();
           }
         });
-      }, 12000);
+      }, 15000);
     } else {
       child = spawn(exe, args, { detached: true, stdio: ["ignore", "pipe", "pipe"], cwd: path.dirname(exe) });
       child.stdout?.on("data", () => { /* 丢弃，防缓冲区满 */ });
