@@ -28,7 +28,7 @@ public class HnpfMcpConnectorPlugin : HacknetPlugin
 {
     public const string ModGUID = "com.HnpfMcp.Connector";
     public const string ModName = "HnpfMcpConnector";
-    public const string Version = "0.1.0";
+    public const string Version = "0.3.1";
 
     public override bool Load()
     {
@@ -55,6 +55,17 @@ public class HnpfMcpConnectorPlugin : HacknetPlugin
         Log.LogInfo($"[{ModName}] loaded. bridge detected → [McpTool] scan triggered.");
         return true;
     }
+
+    /// <summary>
+    /// 卸载时清 KeReflect 的类型缓存（2026-09-20）。TypeCache 里存的 Type 来自本扩展加载周期的
+    /// KE 程序集；若不清，重进扩展后反射会命中**上一轮的类型引用**（KE 已重载出新 Type），
+    /// 导致读到的静态状态错乱 / 持有旧引用影响卸载完整性（退出后插件仍占用的成因之一）。
+    /// </summary>
+    public override bool Unload()
+    {
+        KeReflect.ClearCache();
+        return base.Unload();
+    }
 }
 
 /// <summary>反射辅助：按简单名找类型 + 反射读写字段/属性/方法（模组软依赖的核心）。</summary>
@@ -62,22 +73,39 @@ internal static class KeReflect
 {
     private static readonly Dictionary<string, Type> TypeCache = new();
 
-    /// <summary>按简单名在已加载程序集里找类型（缓存）。找不到返回 null。</summary>
+    /// <summary>清空类型缓存（插件卸载时调用，避免跨加载周期持有旧 Type）。</summary>
+    public static void ClearCache() => TypeCache.Clear();
+
+    /// <summary>
+    /// 按简单名在已加载程序集里找类型（缓存）。找不到返回 null。
+    /// **优先 KernelExtensions 程序集**：多个模组可能存在同名类（如 ConfigLoader），
+    /// 按加载顺序取第一个会命中别家类型 → 读不到成员（返回 null）。
+    /// </summary>
     public static Type FindType(string simpleName)
     {
         if (TypeCache.TryGetValue(simpleName, out var cached)) return cached;
         Type found = null;
         foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
         {
+            var asmName = asm.GetName().Name ?? "";
+            bool isKe = asmName.StartsWith("KernelExtensions", StringComparison.OrdinalIgnoreCase);
             Type[] types;
             try { types = asm.GetTypes(); } catch { continue; }
             foreach (var t in types)
-                if (t.Name == simpleName) { found = t; break; }
-            if (found != null) break;
+            {
+                if (t.Name != simpleName) continue;
+                if (isKe) { found = t; goto done; }   // KE 程序集命中 → 直接采用
+                if (found == null) found = t;          // 其它程序集仅作兜底
+            }
         }
+        done:
         TypeCache[simpleName] = found;
         return found;
     }
+
+    /// <summary>诊断用：类型所在程序集名（排查同名类型命错）。</summary>
+    public static string AssemblyOf(string simpleName) =>
+        FindType(simpleName)?.Assembly?.GetName()?.Name;
 
     public static object Get(object target, string member)
     {
@@ -104,6 +132,19 @@ internal static class KeReflect
     {
         if (t == null) return null;
         return t.GetMethod(method, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)?.Invoke(null, null);
+    }
+
+    /// <summary>带参数调用静态方法（如 ClockManager.GetPersistentState(os)）。</summary>
+    public static object CallStaticArgs(Type t, string method, object[] args)
+    {
+        if (t == null) return null;
+        var ms = t.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        foreach (var m in ms)
+            if (m.Name == method && m.GetParameters().Length == args.Length)
+            {
+                try { return m.Invoke(null, args); } catch { return null; }
+            }
+        return null;
     }
 
     public static string SafeStr(Func<object> getter)
@@ -224,16 +265,19 @@ public static class HnpfMcpAdapters
         };
     }
 
-    [McpTool("ke.config.get", "读取 KE-Config.xml 配置")]
+    [McpTool("ke.config.get", "读取 KE-Config.xml 配置（ConfigLoader）")]
     public static object KeConfig(Dictionary<string, object> p)
     {
-        var t = KeReflect.FindType("KEConfigLoader");
+        // KE 重构后配置加载类由 KEConfigLoader 改名为 ConfigLoader（成员名不变）
+        var t = KeReflect.FindType("ConfigLoader") ?? KeReflect.FindType("KEConfigLoader");
         if (t == null) return KeReflect.ModMissing("KernelExtensions");
         return new Dictionary<string, object>
         {
             ["debug"] = KeReflect.GetStatic(t, "Debug"),
             ["skipVanillaIRCLogs"] = KeReflect.GetStatic(t, "SkipVanillaIRCLogs"),
             ["customImages"] = KeReflect.ToList(KeReflect.GetStatic(t, "CustomImages") as System.Collections.IEnumerable),
+            ["_source"] = t.FullName + " @" + t.Assembly.GetName().Name,
+            ["connectorVersion"] = HnpfMcpConnectorPlugin.Version,
         };
     }
 
@@ -245,5 +289,54 @@ public static class HnpfMcpAdapters
         if (os?.Flags == null || string.IsNullOrEmpty(prefix))
             return new Dictionary<string, object> { ["found"] = false };
         return new Dictionary<string, object> { ["flag"] = os.Flags.GetFlagStartingWith(prefix) };
+    }
+
+    [McpTool("ke.clock.state", "Clock 定时器状态：运行中的 Clock 列表（id/来源/已触发次数/已过时间）+ 待恢复数")]
+    public static object ClockState(Dictionary<string, object> p)
+    {
+        var m = KeReflect.FindType("ClockManager");
+        if (m == null) return KeReflect.ModMissing("KernelExtensions");
+        var os = Hacknet.OS.currentInstance;
+        if (os == null) return new Dictionary<string, object> { ["running"] = false, ["note"] = "no active OS" };
+        var raw = KeReflect.CallStaticArgs(m, "GetPersistentState", new object[] { os });
+        var clocks = new List<object>();
+        if (raw is System.Collections.IEnumerable en)
+            foreach (var st in en)
+            {
+                if (st == null) continue;
+                clocks.Add(new Dictionary<string, object>
+                {
+                    ["id"] = KeReflect.Get(st, "Id"),
+                    ["sourcePath"] = KeReflect.Get(st, "SourcePath"),
+                    ["extensionRoot"] = KeReflect.Get(st, "ExtensionRoot"),
+                    ["timesElapsed"] = KeReflect.Get(st, "TimesElapsed"),
+                    ["elapsed"] = KeReflect.Get(st, "Elapsed"),
+                    ["timer"] = KeReflect.Get(st, "Timer"),
+                });
+            }
+        var pending = KeReflect.GetStatic(m, "PendingRestore") as System.Collections.ICollection;
+        return new Dictionary<string, object>
+        {
+            ["count"] = clocks.Count,
+            ["clocks"] = clocks,
+            ["pendingRestore"] = pending?.Count ?? 0
+        };
+    }
+
+    [McpTool("ke.color.state", "动态颜色状态：已注册的动态颜色字段与各自当前颜色值")]
+    public static object ColorState(Dictionary<string, object> p)
+    {
+        var m = KeReflect.FindType("CustomColorManager");
+        if (m == null) return KeReflect.ModMissing("KernelExtensions");
+        var fields = KeReflect.GetStatic(m, "_dynamicFields") as System.Collections.IDictionary;
+        var result = new Dictionary<string, object>();
+        if (fields != null)
+            foreach (System.Collections.DictionaryEntry e in fields)
+            {
+                var name = e.Key?.ToString();
+                if (string.IsNullOrEmpty(name)) continue;
+                result[name] = KeReflect.CallStaticArgs(m, "GetCurrentColor", new object[] { name })?.ToString();
+            }
+        return new Dictionary<string, object> { ["count"] = result.Count, ["fields"] = result };
     }
 }

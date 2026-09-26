@@ -12,6 +12,16 @@ public static class McpModuleScanner
     private static readonly Dictionary<string, MethodInfo> Tools = new();
     private static readonly Dictionary<string, string> Descriptions = new();
 
+    /// <summary>
+    /// 清空缓存。扩展卸载前必须调用：Tools 里的 MethodInfo 强引用扩展程序集，
+    /// 会让扩展插件无法被卸载（退出扩展后插件仍占用/文件锁定）。
+    /// </summary>
+    public static void ClearCache()
+    {
+        Tools.Clear();
+        Descriptions.Clear();
+    }
+
     public static void Scan()
     {
         Tools.Clear();

@@ -91,10 +91,10 @@ server.tool(
 
 server.tool(
   "get_network_map",
-  "获取全网络节点列表（IP/名称/链接/端口/用户数）",
-  {},
-  async () => {
-    const r = await call("network.map");
+  "获取全网络节点列表（IP/名称/链接/端口/用户数）。summary=true 只返回核心字段（ip/idName/name/visible/connected）——只要拓扑时用，省 token（B4 大响应裁剪）",
+  { summary: z.boolean().optional().describe("true=只返回核心字段（拓扑）；默认 false=全字段（含端口/链接）") },
+  async ({ summary = false }) => {
+    const r = await call("network.map", { summary });
     return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
   }
 );
@@ -418,11 +418,145 @@ server.tool(
 
 server.tool(
   "exit_to_menu",
-  "模拟顶栏 X → Exit to Menu：退出当前扩展会话回主菜单（触发扩展插件卸载 + MainMenu.resetOS + SaveFileManager.Init）——之后可用 menu_load_extension_save 读其他账号，无需重启游戏",
+  "模拟顶栏 X → Exit to Menu：退出当前扩展会话回主菜单（触发扩展插件完整卸载 + MainMenu.resetOS + SaveFileManager.Init）——之后可用 menu_load_extension_save 读其他账号，无需重启游戏。注：bridge 在**帧末**执行退出（不能在 OSUpdateEvent 派发中卸载插件，否则卸载残留导致插件仍占用）；本工具会等待退出生效后再返回（最多 10s）",
   {},
   async () => {
     const r = await call("game.exit_to_menu");
+    // 等待退出生效：轮询 state.get 直到不可用（400/错误 = 已回主菜单）
+    for (let i = 0; i < 20; i++) {
+      await new Promise((x) => setTimeout(x, 500));
+      try {
+        await call("state.get", {});
+      } catch {
+        return { content: [{ type: "text", text: JSON.stringify({ ...r, exited: true, waitedMs: (i + 1) * 500 }, null, 2) }] };
+      }
+    }
+    return { content: [{ type: "text", text: JSON.stringify({ ...r, exited: false, note: "10s 内未确认退出（可能仍在会话中）" }, null, 2) }] };
+  }
+);
+
+// ---------------- G 节工具（借鉴 DSL-AITOOL）：submit_mission / hub / shell / type / memory ----------------
+
+server.tool(
+  "submit_mission",
+  "提交当前任务答案完成 GetString/GetAdminPasswordString 类目标：details 为答案文本（换行/分号分隔多答案）；sender 传任务邮件发件人（mission_detail 的 email.sender），除非任务忽略验证。完成调用 m.finish()（官方完成流程）。",
+  {
+    sender: z.string().optional().describe("任务邮件发件人（见 mission_detail email.sender）；任务要求验证时必须传"),
+    details: z.string().describe("答案文本（newline/分号分隔，可多个）"),
+  },
+  async ({ sender, details }) => {
+    const r = await call("mission.submit", { sender, details });
     return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "hub_list",
+  "列出目标节点任务板（MissionHubServer=contract:/MissionListingServer=listing:/DLCHubServer=dhs:，id 前缀区分）——原版 CSEC/Fuyu/EnTech 等任务中心、DLC DHS 均可；ip 省略=当前连接/本机",
+  { ip: z.string().optional().describe("目标 IP；省略则当前连接/本机") },
+  async ({ ip }) => {
+    const r = await call("hub.list", { ip });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "hub_accept",
+  "接取任务板任务（id 来自 hub_list，如 contract:xxx / listing:0 / dhs:0）；需无当前活动任务",
+  { ip: z.string().optional().describe("目标 IP；省略则当前连接/本机"), id: z.string().describe("任务 id（hub_list 返回）") },
+  async ({ ip, id }) => {
+    const r = await call("hub.accept", { ip, id });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "shell_drive",
+  "驱动已打开的 shell（conshell 语义）：**前提是目标节点已运行 `shell` 指令打开 shell（每个节点只能开一个）**。overload=对当前连接目标的代理泛洪（垃圾流量填满代理存储→代理失效→流量可通行；需已连接目标+目标有代理）；cancel=停止过载；exit=关闭当前 shell（每节点一个，关了可重开）。",
+  { action: z.string().optional().describe("overload / cancel / exit（默认 overload）") },
+  async ({ action }) => {
+    const r = await call("shell.drive", { action });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "terminal_type",
+  "向当前终端输入文本但不回车（交互式程序如 porthack/forkbomb 的分步输入；配合 execute_command 回车提交）",
+  { text: z.string().describe("要输入的文本（不回车）") },
+  async ({ text }) => {
+    const r = await call("terminal.type", { text });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "firewall_crack",
+  "防火墙直改（A6，调试/验收场景）：将目标防火墙 firewall.solved 直接置 true（跳过 analyze→solve 流程）；无防火墙返回 solved=false。仅用于测试/验收，正常游玩请走 analyze→solve。",
+  { ip: z.string().optional().describe("目标 IP；省略则当前连接/本机") },
+  async ({ ip }) => {
+    const r = await call("firewall.crack", { ip });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "os_memory",
+  "读取目标机内存（DLC RamModule）：dataBlocks/commandsRun/fileFragments（含密码碎片）/images；无 DLC 或目标无内存时返回 null",
+  { ip: z.string().optional().describe("目标 IP；省略则当前连接/本机") },
+  async ({ ip }) => {
+    const r = await call("os.memory", { ip });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+// ---------------- run_batch：批量串行执行（借鉴 DSL-AITOOL 的 act，但覆盖全部纯桥接工具） ----------------
+// MCP 工具名 → 桥接方法映射（**仅游戏内指令/动作类**——对齐 DSL-AITOOL act 的语义"批量在游戏内发指令"）。
+// 排除：只读查询/状态类（get_state/read_file/terminal_history/mail/irc/board/events/registry/modtool_list/
+// get_flags/save_list/ping/hub_list/os_memory 等）——查询请直接调用对应工具，别塞进批量；
+// 进程/管道类特殊工具（launch_game/pipe_probe）同样排除。
+const TOOL_TO_METHOD = {
+  connect: "game.connect", disconnect: "game.disconnect", execute_command: "game.execute_command",
+  run_hack_script: "game.run_hack_script", run_action: "game.run_action", launch_exe: "game.launch_exe",
+  write_file: "fs.write", append_file: "fs.append",
+  open_port: "port.open", close_port: "port.close", take_admin: "admin.take", firewall_crack: "firewall.crack",
+  set_flag: "flags.set", clear_flag: "flags.clear",
+  save_game: "game.save", exit_to_menu: "game.exit_to_menu",
+  submit_mission: "mission.submit", hub_accept: "hub.accept",
+  shell_drive: "shell.drive", terminal_type: "terminal.type",
+  menu_enter_extension: "menu.enter_extension", menu_load_extension_save: "menu.load_extension_save",
+};
+
+server.tool(
+  "run_batch",
+  "批量串行执行**游戏内指令/动作类**工具（对齐 DSL-AITOOL act 语义：批量在游戏内发指令，不是多工具查询批量）。steps 数组，每步 { tool, args? }；支持工具：execute_command/connect/disconnect/run_action/run_hack_script/launch_exe/write_file/append_file/open_port/close_port/take_admin/set_flag/clear_flag/save_game/exit_to_menu/submit_mission/hub_accept/shell_drive/terminal_type/menu_enter_extension/menu_load_extension_save。**只读查询类（get_state/read_file/terminal_history/mail/irc/board/events/registry/modtool_list/get_flags/save_list/ping/hub_list/os_memory 等）不在批量——请直接调用对应工具**。默认任一步失败即中断；continueOnError=true 则失败记录后继续。每步桥接超时 8s。",
+  {
+    steps: z.array(z.object({
+      tool: z.string().describe("游戏内指令/动作类工具名（如 execute_command / connect / run_action / set_flag / terminal_type）"),
+      args: z.record(z.string(), z.any()).optional().describe("该工具参数（对象）"),
+    })).describe("要执行的步骤序列"),
+    continueOnError: z.boolean().optional().describe("默认 false=任一步失败即中断；true=失败记录后继续后续步骤"),
+  },
+  async ({ steps = [], continueOnError = false }) => {
+    const results = [];
+    for (let i = 0; i < steps.length; i++) {
+      const { tool, args = {} } = steps[i];
+      const method = TOOL_TO_METHOD[tool];
+      if (!method) {
+        results.push({ step: i, tool, ok: false, error: `unsupported tool for batch: ${tool}` });
+        if (!continueOnError) break;
+        continue;
+      }
+      try {
+        const r = await call(method, args);
+        results.push({ step: i, tool, ok: true, result: r });
+      } catch (e) {
+        results.push({ step: i, tool, ok: false, error: String(e.message || e) });
+        if (!continueOnError) break;
+      }
+    }
+    const allOk = results.length === steps.length && results.every((r) => r.ok);
+    return { content: [{ type: "text", text: JSON.stringify({ ok: allOk, count: results.length, results }, null, 2) }] };
   }
 );
 
@@ -499,9 +633,9 @@ server.tool(
 
 server.tool(
   "menu_load_extension_save",
-  "在主菜单用存档账号进入扩展（恢复进度，对应 ExtensionsMenuScreen 的读档进扩展；需游戏处于主菜单）。userFile 取 save_list 的存档路径。",
+  "在主菜单用存档账号进入扩展（恢复进度，对应 ExtensionsMenuScreen 的读档进扩展；需游戏处于主菜单）。**userFile 必须传纯文件名**（如 save_1.xml/save_mcp.xml），与 UI 读档一致——不要传 save_list 返回的绝对路径，否则会触发假读档（FileExists 拼账号目录前缀失败→OS.WillLoadSave=false→新建空扩展会话，所有 SaveExecutor 不触发，时钟/Flag 等不恢复）",
   {
-    userFile: z.string().describe("存档 XML 完整路径（save_list 返回的 path）"),
+    userFile: z.string().describe("存档纯文件名（如 save_1.xml），不要传 save_list 的绝对路径（bridge 已用 Path.GetFileName 归一化防御）"),
     username: z.string().describe("存档用户名（save_list 返回的 name 去掉 save_ 前缀和 .xml）"),
   },
   async ({ userFile, username }) => {

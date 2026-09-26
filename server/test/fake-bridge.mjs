@@ -82,12 +82,28 @@ function fakeResult(method, params = {}) {
       return { ok: true, mode: "new account", username: params.username || "mcp" };
     case "menu.load_extension_save":
       return { ok: true, mode: "load save", username: params.username, userFile: params.userFile };
+    case "mission.submit":
+      return { ok: true, completed: true, mission: "test-mission" };
+    case "hub.list":
+      return { ip: params.ip || "cur", hubs: [{ daemon: "MissionHubServer", name: "TestHub", missions: [{ id: "contract:001", title: "Test Contract" }] }] };
+    case "hub.accept":
+      return { ok: true, accepted: params.id };
+    case "firewall.crack":
+      return { ok: true, solved: true, ip: params.ip || "cur" };
+    case "shell.drive":
+      return { ok: true, action: params.action || "overload" };
+    case "terminal.type":
+      return { ok: true, typed: params.text };
+    case "os.memory":
+      return { ip: params.ip || "cur", memory: { dataBlocks: ["block1"], fileFragments: { "pass_frag": "abc123" } } };
     case "game.exit_to_menu":
       return { ok: true, message: "exit to main menu requested" };
     case "events.get":
       return { events: [{ id: 1, event: "node.connected", data: { ip: "10.0.0.2" }, t: "12:00:00" }], nextId: 2 };
     case "registry.list":
       return { commands: ["mcp"], actions: ["PlaySound", "TerminalWrite", "PhaseSwiftScene"], executables: ["#CUSTOMTRIAL#"], daemons: ["FlightDaemon"] };
+    case "flags.set":
+      return { ok: true, flag: params.name };
     case "flags.get":
       return { flags: ["PhaseSwift_Demo", "Kernel_VMInfected_A"] };
     default:

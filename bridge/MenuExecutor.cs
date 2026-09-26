@@ -91,6 +91,11 @@ public static class MenuExecutor
         var username = Str(p, "username");
         if (string.IsNullOrEmpty(userFile) || string.IsNullOrEmpty(username))
             throw new ArgumentException("userFile and username are required (see save_list)");
+        // 防"假读档"：LocalDocumentsStorageMethod.FileExists(filename) 会拼账号目录前缀，
+        // 传绝对路径会拼成 "KernelExtensionsTEST/D:\\...\\save.xml"（无效）→ FileExists=false
+        // → OS.WillLoadSave=false → 走新建扩展（LoadNewExtensionSession），所有自定义 SaveExecutor
+        // 不触发（Clock/Flag 等不恢复）。归一化为纯文件名，与 UI 读档一致。
+        userFile = System.IO.Path.GetFileName(userFile);
         var ext = Str(p, "ext");
         if (string.IsNullOrEmpty(ext)) ext = "KernelExtensionTEST123123";
 
@@ -174,19 +179,43 @@ public static class MenuExecutor
         return null;
     }
 
-    /// <summary>加载扩展 Plugins/ 目录下的 DLL（连接器/KE 等），随后 McpModuleScanner 重扫注册 [McpTool]。</summary>
+    /// <summary>加载扩展 Plugins/ 目录下的 DLL（连接器/KE 等），随后 McpModuleScanner 重扫注册 [McpTool]。
+    ///
+    /// ⚠️ 必须用**字节加载**且**先判重**（2026-09-20）：
+    ///   原实现 `Assembly.LoadFrom(dll)` 会**永久锁定文件**——.NET Framework 的 LoadFrom 会持有文件句柄
+    ///   直到 AppDomain 卸载，而 bridge 是全局插件永不卸载 → 一旦 MCP 走过这里，扩展 DLL 就被锁死，
+    ///   **退出扩展后也无法替换/覆盖**（cp 报 "Device or resource busy"）。
+    ///   这解释了"用 MCP 进过扩展后 DLL 换不掉，而手动进扩展（不经过 bridge）则正常"。
+    ///   另外先判重可避免与 Pathfinder 的加载撞车（同一 DLL 被加载出两套类型 → 类型 identity 不一致）。
+    /// </summary>
     private static void TryLoadExtensionPlugins(string extFolderName)
     {
         try
         {
             var pluginsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Extensions", extFolderName, "Plugins");
             if (!Directory.Exists(pluginsDir)) return;
-            int loaded = 0;
+
+            // 已加载的程序集名（Pathfinder 正常路径已加载的，一律跳过）
+            var loadedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try { loadedNames.Add(a.GetName().Name); } catch { }
+            }
+
+            int loaded = 0, skipped = 0;
             foreach (var dll in Directory.GetFiles(pluginsDir, "*.dll"))
             {
-                try { Assembly.LoadFrom(dll); loaded++; } catch { }
+                var name = Path.GetFileNameWithoutExtension(dll);
+                if (loadedNames.Contains(name)) { skipped++; continue; }   // 已加载 → 跳过（不重复 LoadFrom）
+                try
+                {
+                    // 字节加载：不持有文件句柄 → 退出扩展后可正常替换 DLL
+                    Assembly.Load(File.ReadAllBytes(dll));
+                    loaded++;
+                }
+                catch { }
             }
-            HnpfMcpBridgePlugin.LogInfo($"[{HnpfMcpBridgePlugin.ModName}] 已加载扩展插件 DLL x{loaded}（{pluginsDir}）");
+            HnpfMcpBridgePlugin.LogInfo($"[{HnpfMcpBridgePlugin.ModName}] 扩展插件 DLL 兜底加载 x{loaded}（已加载跳过 x{skipped}，字节加载不锁文件）（{pluginsDir}）");
             try { McpModuleScanner.Scan(); } catch { }
         }
         catch { }

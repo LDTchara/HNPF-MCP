@@ -39,6 +39,13 @@
 | `porthack.exe` | 破解开放端口 | 目标需已有开放端口（`probe` 确认）；交互式选择端口 |
 | `forkbomb.exe` | 叉爆：快速消耗目标内存 | 交互式选进程；可致目标重启/崩溃 |
 | `shell.exe` | 远程 shell（含代理过载与 IP 陷阱能力） | 交互式远程操作 |
+
+**Shell 与代理（驱动流程，shell_drive 工具）**：
+- **打开 shell**：在目标节点上运行 `shell` 指令（`execute_command "shell"`）——**每个节点只能开一个 shell**；shell 是低内存小型进程，运行在单一主机上，本地操控
+- **Overload（过载）**：`shell_drive { action: "overload" }`——shell 节点对**当前连接目标**发起泛洪攻击，用垃圾流量**填满目标代理服务器存储**（代理存满即失效 → 有害流量可通行）；**前置条件：已连接目标 + 目标有代理 + 本机/连接链路上有已开 shell**
+- **Cancel（取消）**：`shell_drive { action: "cancel" }`——停止过载
+- **Exit（退出）**：`shell_drive { action: "exit" }`——关闭当前 shell（每节点一个，关了可重开）
+- **Trap（陷阱）**：shell 的另一种模式（警告外来 shell + 对远程连接者 forkbomb 反击）
 | `securitytracer.exe` | 安全追踪器 | 查看管理员追踪状态 |
 | `tutorial.exe` | 教程 | 新手用 |
 | `notes.exe` | 便签 | 类似 addNote |

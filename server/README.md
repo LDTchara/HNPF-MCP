@@ -89,7 +89,7 @@ MCP 宿主配置示例（Claude Desktop `claude_desktop_config.json` / WorkBuddy
 }
 ```
 
-## 三、工具清单（35 个）
+## 三、工具清单（45 个）
 
 | 分类 | 工具 |
 |---|---|
@@ -101,8 +101,12 @@ MCP 宿主配置示例（Claude Desktop `claude_desktop_config.json` / WorkBuddy
 | Flag | `set_flag(name)` `clear_flag(name)` |
 | 存档 | `save_game`（自动快照到 HNPF-MCP/snapshots/） |
 | 事件/发现 | `get_events(since?)`（增量事件）`registry`（自动列出模组注册的命令/动作/exe/daemon） |
+| 邮件/IRC/论坛 | `mail_list(ip?)` `mail_read(ip?,user?,folder?,subject?)` `irc_read(ip?)` `board_read(ip?)` |
+| 任务/情报（G 节） | `submit_mission(details,sender?)` `hub_list(ip?)` `hub_accept(id,ip?)` `os_memory(ip?)` |
+| 交互（G 节） | `shell_drive(action?)`（shell overload/cancel/exit）`terminal_type(text)`（模拟输入不回车） |
+| 批量/生命周期 | `run_batch(steps,continueOnError?)`（批量串行）`exit_to_menu`（游戏内回主菜单切账号）`pipe_probe(candidates?)` |
 | 模组专属 | `modtool_list` `modtool_call`（调用模组 `[McpTool]` 工具，见 examples/KeMcpAdapter.cs） |
-| 游戏启动/主菜单 | `launch_game(ext?,username?,dryRun?)`（正常启动；`ext` 后台自动经主菜单进扩展，`-extstart` 已弃用）`menu_enter_extension(username?,pass?)`（主菜单新建账号进扩展）`menu_load_extension_save(userFile,username,ext?)`（主菜单恢复存档进扩展） |
+| 游戏启动/主菜单 | `launch_game(ext?,username?,console?,debug?,dryRun?)`（正常启动；`ext` 后台自动经主菜单进扩展，`-extstart` 已弃用；`console` 带控制台；默认带 `-enabledebug -enablefc`）`menu_enter_extension(username?,pass?)`（主菜单新建账号进扩展）`menu_load_extension_save(userFile,username,ext?)`（主菜单恢复存档进扩展） |
 | 多开 | `pipe_probe(candidates?)`（探测在线 bridge 管道）；`launch_game` 含进程检测防多开 |
 
 注：`ip` 参数省略时作用于当前连接节点。

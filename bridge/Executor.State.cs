@@ -22,7 +22,8 @@ public static partial class Executor
         ["admin"] = os.thisComputer != null && os.thisComputer.currentUser.type >= 2
     };
 
-    private static object GetNetworkMap(OS os)
+    /// <summary>网络地图。summary=true 只返回核心字段（ip/idName/name/visible/connected）——大响应裁剪（B4）。</summary>
+    private static object GetNetworkMap(OS os, bool summary = false)
     {
         var nodes = os.netMap?.nodes;
         var list = new List<object>();
@@ -31,19 +32,33 @@ public static partial class Executor
             foreach (var c in nodes)
             {
                 if (c == null) continue;
-                list.Add(new Dictionary<string, object>
+                if (summary)
                 {
-                    ["ip"] = c.ip,
-                    ["idName"] = c.idName,
-                    ["name"] = c.name,
-                    ["adminIP"] = c.adminIP,
-                    ["links"] = Safe(c.links),
-                    ["ports"] = Safe(c.ports),
-                    ["portsOpen"] = SafeBytes(c.portsOpen),
-                    ["users"] = c.users?.Count ?? 0,
-                    ["hasFiles"] = c.files != null,
-                    ["visible"] = os.netMap.visibleNodes?.Contains(os.netMap.nodes.IndexOf(c)) ?? false
-                });
+                    list.Add(new Dictionary<string, object>
+                    {
+                        ["ip"] = c.ip,
+                        ["idName"] = c.idName,
+                        ["name"] = c.name,
+                        ["visible"] = os.netMap.visibleNodes?.Contains(os.netMap.nodes.IndexOf(c)) ?? false,
+                        ["connected"] = c == os.connectedComp
+                    });
+                }
+                else
+                {
+                    list.Add(new Dictionary<string, object>
+                    {
+                        ["ip"] = c.ip,
+                        ["idName"] = c.idName,
+                        ["name"] = c.name,
+                        ["adminIP"] = c.adminIP,
+                        ["links"] = Safe(c.links),
+                        ["ports"] = Safe(c.ports),
+                        ["portsOpen"] = SafeBytes(c.portsOpen),
+                        ["users"] = c.users?.Count ?? 0,
+                        ["hasFiles"] = c.files != null,
+                        ["visible"] = os.netMap.visibleNodes?.Contains(os.netMap.nodes.IndexOf(c)) ?? false
+                    });
+                }
             }
         }
         return new Dictionary<string, object> { ["count"] = list.Count, ["nodes"] = list };

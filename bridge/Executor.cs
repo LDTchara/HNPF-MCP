@@ -13,6 +13,12 @@ namespace HnpfMcpBridge;
 /// </summary>
 public static partial class Executor
 {
+    /// <summary>
+    /// exit_to_menu 待执行标志：请求时置位，由 ExitToMenuFrameHook（Game1.Update Postfix，帧末）执行。
+    /// 不能在 OSUpdateEvent 派发中直接 quitGame——卸载插件（UnpatchSelf）会打断事件派发导致卸载残留。
+    /// </summary>
+    public static bool PendingExitToMenu = false;
+
     // ---------------- 请求泵 ----------------
 
     public static void OnUpdate(OSUpdateEvent e)
@@ -78,7 +84,7 @@ public static partial class Executor
                 return GetState(os);
 
             case "network.map":
-                return GetNetworkMap(os);
+                return GetNetworkMap(os, BoolParam(p, "summary"));
 
             case "computer.get":
                 return GetComputer(os, Str(p, "ip"));
@@ -131,11 +137,40 @@ public static partial class Executor
                 // 模拟顶栏 X → "Exit to Menu"：os.quitGame（public）→ HasExitedAndEnded=true（触发
                 // 扩展插件卸载）→ MainMenu.resetOS + AddScreen(new MainMenu) + SaveFileManager.Init
                 // → 之后可 menu_load_extension_save 读其他账号（无需重启游戏）
-                os.quitGame(null, null);
-                return new Dictionary<string, object> { ["ok"] = true, ["message"] = "exit to main menu requested" };
+                //
+                // ⚠️ 不在本处直接 quitGame！本方法运行在 OSUpdateEvent 派发中（bridge 的 OnUpdate 是
+                //    派发目标之一，此时正在遍历 handler 列表）。quitGame 的 Harmony Postfix 会调
+                //    HacknetChainloader.UnloadTemps() → 各扩展插件 HarmonyInstance.UnpatchSelf()——
+                //    在事件派发/正在执行的 patch 里卸载插件会打断派发、卸载不完整（日志缺
+                //    "Finished unloading extension plugins"），表现为退出后插件仍占用。
+                //    手动点 X → Exit to Menu 发生在 MessageBoxScreen.Update（派发早已结束）→ 安全。
+                //    故改为只置标志，由 ExitToMenuFrameHook（Game1.Update Postfix，帧末）执行。
+                PendingExitToMenu = true;
+                return new Dictionary<string, object> { ["ok"] = true, ["queued"] = true, ["message"] = "exit to main menu queued (runs at end of frame)" };
 
             case "port.open":
                 return PortChange(os, Str(p, "ip"), IntParam(p, "port"), true);
+
+            case "firewall.crack":
+                return FirewallCrack(os, Str(p, "ip"));
+
+            case "mission.submit":
+                return MissionSubmit(os, Str(p, "sender"), Str(p, "details"));
+
+            case "hub.list":
+                return HubList(os, Str(p, "ip"));
+
+            case "hub.accept":
+                return HubAccept(os, Str(p, "ip"), Str(p, "id"));
+
+            case "shell.drive":
+                return ShellDrive(os, Str(p, "action"));
+
+            case "terminal.type":
+                return TypeInput(os, Str(p, "text"));
+
+            case "os.memory":
+                return OsMemory(os, Str(p, "ip"));
 
             case "port.close":
                 return PortChange(os, Str(p, "ip"), IntParam(p, "port"), false);
@@ -225,6 +260,16 @@ public static partial class Executor
             if (int.TryParse(v?.ToString(), out var n)) return n;
         }
         return 0;
+    }
+
+    private static bool BoolParam(Dictionary<string, object> p, string key)
+    {
+        if (p != null && p.TryGetValue(key, out var v))
+        {
+            if (v is bool b) return b;
+            if (bool.TryParse(v?.ToString(), out var t)) return t;
+        }
+        return false;
     }
 
     private static long LongParam(Dictionary<string, object> p, string key)

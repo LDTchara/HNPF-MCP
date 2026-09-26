@@ -79,6 +79,41 @@ try {
   const board = await client.callTool({ name: "board_read", arguments: { ip: "1.2.3.4" } });
   console.log(`[e2e] board_read: ${JSON.parse(board.content[0].text).threadCount} 线程`);
 
+  const rb = await client.callTool({
+    name: "run_batch",
+    arguments: {
+      steps: [
+        { tool: "execute_command", args: { cmd: "ls" } },
+        { tool: "connect", args: { ip: "10.0.0.2" } },
+        { tool: "set_flag", args: { name: "e2e_batch" } },
+      ],
+    },
+  });
+  const rbj = JSON.parse(rb.content[0].text);
+  console.log(`[e2e] run_batch: ok=${rbj.ok} count=${rbj.count}`);
+  const rbErr = await client.callTool({
+    name: "run_batch",
+    arguments: { steps: [{ tool: "get_state", args: {} }, { tool: "set_flag", args: { name: "x" } }] },
+  });
+  const rbe = JSON.parse(rbErr.content[0].text);
+  console.log(`[e2e] run_batch 失败中断: ok=${rbe.ok} count=${rbe.count}（应 1）`);
+
+  const fw = await client.callTool({ name: "firewall_crack", arguments: { ip: "10.0.0.5" } });
+  console.log(`[e2e] firewall_crack: ${JSON.parse(fw.content[0].text).solved}`);
+  const sm = await client.callTool({ name: "submit_mission", arguments: { sender: "boss@test", details: "answer1\nanswer2" } });
+  console.log(`[e2e] submit_mission: ${JSON.parse(sm.content[0].text).completed}`);
+  const hub = await client.callTool({ name: "hub_list", arguments: {} });
+  const hj = JSON.parse(hub.content[0].text);
+  console.log(`[e2e] hub_list: ${hj.hubs[0].daemon} 任务 ${hj.hubs[0].missions.length} 个`);
+  const ha = await client.callTool({ name: "hub_accept", arguments: { id: "contract:001" } });
+  console.log(`[e2e] hub_accept: ${JSON.parse(ha.content[0].text).accepted}`);
+  const sd = await client.callTool({ name: "shell_drive", arguments: { action: "overload" } });
+  console.log(`[e2e] shell_drive: ${JSON.parse(sd.content[0].text).action}`);
+  const tt = await client.callTool({ name: "terminal_type", arguments: { text: "hello" } });
+  console.log(`[e2e] terminal_type: ${JSON.parse(tt.content[0].text).typed}`);
+  const om = await client.callTool({ name: "os_memory", arguments: {} });
+  console.log(`[e2e] os_memory fragments: ${JSON.stringify(JSON.parse(om.content[0].text).memory.fileFragments)}`);
+
   console.log("[e2e] 全部通过 ✔");
 } finally {
   await client.close();
