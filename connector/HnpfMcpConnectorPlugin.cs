@@ -73,18 +73,61 @@ internal static class KeReflect
 {
     private static readonly Dictionary<string, Type> TypeCache = new();
 
+    /// <summary>
+    /// 上次查找时看到的 KE 程序集。KE 被重载后 AppDomain 里可能同时存在新旧副本
+    /// （旧副本不一定真卸载），用它做“世代”标记：一旦换了就整体清缓存。
+    /// </summary>
+    private static System.Reflection.Assembly _keAsmSnapshot;
+
     /// <summary>清空类型缓存（插件卸载时调用，避免跨加载周期持有旧 Type）。</summary>
-    public static void ClearCache() => TypeCache.Clear();
+    public static void ClearCache()
+    {
+        TypeCache.Clear();
+        _keAsmSnapshot = null;
+    }
+
+    /// <summary>
+    /// 当前 KE 程序集（若 AppDomain 里有多个副本，取最后加载的那个）。
+    /// 返回 null 表示 KE 未加载。
+    /// </summary>
+    private static System.Reflection.Assembly FindKeAssembly()
+    {
+        System.Reflection.Assembly last = null;
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            var n = asm.GetName().Name ?? "";
+            if (n.StartsWith("KernelExtensions", StringComparison.OrdinalIgnoreCase))
+                last = asm;
+        }
+        return last;
+    }
 
     /// <summary>
     /// 按简单名在已加载程序集里找类型（缓存）。找不到返回 null。
     /// **优先 KernelExtensions 程序集**：多个模组可能存在同名类（如 ConfigLoader），
     /// 按加载顺序取第一个会命中别家类型 → 读不到成员（返回 null）。
+    /// <para>
+    /// **世代校验**（修复“重进扩展后读到上一轮的静态字段”）：
+    /// KE 重载后旧副本可能仍在 AppDomain 里，此时命中旧 Type 会读到上一轮的静态状态
+    /// （实测：ke.aircraft.state 报出的 daemon IP 与场景实际完全不符）。
+    /// 因此每次调用先比对 KE 程序集是否换了，换了就整体清缓存；
+    /// 查找 KE 类型时取“最后一个命中的”副本（后加载的通常排在后面）。
+    /// </para>
     /// </summary>
     public static Type FindType(string simpleName)
     {
+        // 世代校验：KE 程序集换代（重载）→ 缓存整体失效
+        var keAsm = FindKeAssembly();
+        if (!ReferenceEquals(keAsm, _keAsmSnapshot))
+        {
+            TypeCache.Clear();
+            _keAsmSnapshot = keAsm;
+        }
+
         if (TypeCache.TryGetValue(simpleName, out var cached)) return cached;
-        Type found = null;
+
+        Type found = null;      // 非 KE 程序集的兜底候选
+        Type keFound = null;    // KE 程序集的候选
         foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
         {
             var asmName = asm.GetName().Name ?? "";
@@ -94,13 +137,15 @@ internal static class KeReflect
             foreach (var t in types)
             {
                 if (t.Name != simpleName) continue;
-                if (isKe) { found = t; goto done; }   // KE 程序集命中 → 直接采用
-                if (found == null) found = t;          // 其它程序集仅作兜底
+                // 不 break：后面的 KE 副本可能更新，持续覆盖
+                if (isKe) keFound = t;
+                else if (found == null) found = t;
             }
         }
-        done:
-        TypeCache[simpleName] = found;
-        return found;
+
+        var result = keFound ?? found;
+        TypeCache[simpleName] = result;
+        return result;
     }
 
     /// <summary>诊断用：类型所在程序集名（排查同名类型命错）。</summary>
