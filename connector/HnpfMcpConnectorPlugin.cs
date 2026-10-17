@@ -345,6 +345,131 @@ public static class HnpfMcpAdapters
         };
     }
 
+    // ================= 运行期 exe 实例定位（PortHackV2 / ProxyKiller）=================
+
+    /// <summary>找当前 OS 里正在运行的指定类型 exe 实例（Hacknet 的 os.exes 列表）。</summary>
+    private static object FindRunningExe(Type exeType)
+    {
+        try
+        {
+            var os = Hacknet.OS.currentInstance;
+            if (os == null || exeType == null) return null;
+            var f = typeof(Hacknet.OS).GetField("exes",
+                System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.NonPublic);
+            if (f?.GetValue(os) is System.Collections.IList list)
+                foreach (var e in list)
+                {
+                    if (e == null) continue;
+                    var et = e.GetType();
+                    if (et == exeType || et.Name == exeType.Name) return e;
+                }
+        }
+        catch { }
+        return null;
+    }
+
+    private static float ToFloat(object v)
+    {
+        try { return v == null ? 0f : Convert.ToSingle(v); } catch { return 0f; }
+    }
+
+    private static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
+
+    [McpTool("ke.porthackv2.state", "PortHackV2 运行期状态：状态机 / 目标 / 根级时长与进度 / 各协议进度 / 前置是否满足")]
+    public static object PortHackV2State(Dictionary<string, object> p)
+    {
+        var t = KeReflect.FindType("PortHackV2Exe");
+        if (t == null) return KeReflect.ModMissing("KernelExtensions");
+
+        var inst = FindRunningExe(t);
+        if (inst == null) return new Dictionary<string, object> { ["running"] = false };
+
+        var cfg = KeReflect.Get(inst, "CurrentConfig");
+        object state = KeReflect.Get(inst, "CurrentState");
+        float crackTime = ToFloat(KeReflect.Get(inst, "_crackTime"));
+        float rootTime = ToFloat(KeReflect.Get(cfg, "Time"));
+        string targetIp = KeReflect.Get(inst, "_targetIp") as string;
+
+        var protos = new List<object>();
+        foreach (var rt in KeReflect.ToList(KeReflect.Get(inst, "_runtimes")))
+        {
+            var def = KeReflect.Get(rt, "Def");
+            protos.Add(new Dictionary<string, object>
+            {
+                ["name"] = KeReflect.Get(def, "Name"),
+                ["startDelay"] = ToFloat(KeReflect.Get(def, "StartDelay")),
+                ["rngPercent"] = Math.Round(ToFloat(KeReflect.Get(def, "SuccessChance")) * 100f, 1),
+                ["timeIfSuccess"] = ToFloat(KeReflect.Get(def, "TimeIfSuccess")),
+                ["timeIfFail"] = ToFloat(KeReflect.Get(def, "TimeIfFail")),
+                ["delayElapsed"] = Math.Round(ToFloat(KeReflect.Get(rt, "DelayElapsed")), 2),
+                ["elapsed"] = Math.Round(ToFloat(KeReflect.Get(rt, "Elapsed")), 2),
+                ["started"] = KeReflect.Get(rt, "Started"),
+                ["finished"] = KeReflect.Get(rt, "Finished"),
+                ["succeeded"] = KeReflect.Get(rt, "Succeeded"),
+                ["isDone"] = KeReflect.Get(rt, "IsDone"),
+            });
+        }
+
+        bool prereq = false;
+        try { prereq = KeReflect.Call(inst, "AllPrerequisitesMet") is bool b && b; } catch { }
+
+        return new Dictionary<string, object>
+        {
+            ["running"] = true,
+            ["state"] = state?.ToString(),
+            ["configName"] = KeReflect.Get(cfg, "SourceName"),
+            ["programName"] = KeReflect.Get(cfg, "ProgramName"),
+            ["targetIp"] = targetIp,
+            ["rootTime"] = rootTime,
+            ["crackElapsed"] = Math.Round(crackTime, 3),
+            ["progress"] = rootTime > 0f ? Math.Round(Clamp01(crackTime / rootTime), 3) : (object)null,
+            ["showEstimate"] = KeReflect.Get(cfg, "ShowEstimate"),
+            ["prerequisitesMet"] = prereq,
+            ["protocols"] = protos,
+        };
+    }
+
+    [McpTool("ke.proxykiller.state", "ProxyKiller 运行期状态：RAM 爬升 / 当前倍速 / 自过载档位 / 所盯节点")]
+    public static object ProxyKillerState(Dictionary<string, object> p)
+    {
+        var t = KeReflect.FindType("ProxyKillerExe");
+        if (t == null) return KeReflect.ModMissing("KernelExtensions");
+
+        var inst = FindRunningExe(t);
+        if (inst == null) return new Dictionary<string, object> { ["running"] = false };
+
+        var cfg = KeReflect.Get(inst, "_cfg");
+        float ram = ToFloat(KeReflect.Get(inst, "_ram"));
+        float ramStart = ToFloat(KeReflect.Get(inst, "_ramStart"));
+        float target = ToFloat(KeReflect.Get(inst, "_target"));
+        float mulTarget = ToFloat(KeReflect.Get(inst, "_mulTarget"));
+
+        // 倍速由 RAM 爬升**线性**驱动：1 → ShellOverloadTarget。
+        // 注意 BurstTarget 只影响"爬满快慢"，不影响最终倍速（归一化后）。
+        float progress = target > ramStart ? Clamp01((ram - ramStart) / (target - ramStart)) : 1f;
+        var watched = KeReflect.Get(inst, "_watched");
+
+        return new Dictionary<string, object>
+        {
+            ["running"] = true,
+            ["configName"] = KeReflect.Get(cfg, "SourceName"),
+            ["selfOverload"] = KeReflect.Get(cfg, "SelfOverload"),
+            ["selfOverloadRate"] = KeReflect.Get(inst, "_selfOverloadRate"),
+            ["ram"] = Math.Round(ram, 1),
+            ["ramStart"] = ramStart,
+            ["ramTarget"] = target,
+            ["ramProgress"] = Math.Round(progress, 3),
+            ["multiplier"] = Math.Round(1f + (mulTarget - 1f) * progress, 2),
+            ["multiplierMax"] = mulTarget,
+            ["followConnection"] = KeReflect.Get(cfg, "ResolvedFollowConnection"),
+            ["watchedNode"] = KeReflect.SafeStr(() => KeReflect.Get(watched, "ip") ?? KeReflect.Get(watched, "idName")),
+            ["watchedProxyActive"] = KeReflect.Get(watched, "proxyActive"),
+            ["sawProxyActive"] = KeReflect.Get(inst, "_sawProxyActive"),
+        };
+    }
+
     [McpTool("ke.config.get", "读取 KE-Config.xml 配置（ConfigLoader）")]
     public static object KeConfig(Dictionary<string, object> p)
     {
