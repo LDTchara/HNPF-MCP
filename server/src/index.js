@@ -265,6 +265,84 @@ server.tool(
 );
 
 server.tool(
+  "game_log_tail",
+  "读取**游戏日志文件**（BepInEx LogOutput.log，含 KE banner / 所有插件日志 / 异常栈）。"
+    + "这是「控制台日志」的可读来源 —— 游戏用 Start-Process 启动时控制台内容与这份文件同源。"
+    + "支持增量：把上次返回的 offset 再传进来，只返回之后的新行。",
+  {
+    lines: z.number().optional().describe("返回末尾多少行，默认 50，最多 5000"),
+    filter: z.string().optional().describe("只返回包含该子串的行（大小写不敏感）"),
+    offset: z.number().optional().describe("上次返回的 offset（字节位置）；传入时只返回该位置之后的新内容"),
+    path: z.string().optional().describe("自定义日志路径（默认 HNPF_LOG 或 <游戏目录>/BepInEx/LogOutput.log）"),
+  },
+  async ({ lines, filter, offset, path }) => {
+    const fs = await import("node:fs");
+    const pathMod = await import("node:path");
+    const logPath =
+      path || process.env.HNPF_LOG ||
+      pathMod.join(pathMod.dirname(GAME_EXE), "BepInEx", "LogOutput.log");
+
+    let stat;
+    try { stat = fs.statSync(logPath); }
+    catch (e) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: `日志文件不存在: ${logPath}` }, null, 2) }] };
+    }
+
+    const want = Math.min(Math.max(lines ?? 50, 1), 5000);
+    let start = 0;
+    let incremental = false;
+    if (typeof offset === "number" && offset >= 0 && offset <= stat.size) {
+      start = offset;              // 增量：只读新内容
+      incremental = true;
+    } else if (filter) {
+      // 带过滤时只读末尾一小段会漏（比如 "McpTool" 在文件很早的位置）→ 扫整个文件（上限 8MB）
+      start = Math.max(0, stat.size - 8 * 1024 * 1024);
+    } else {
+      // 末尾读：按行数估算读取字节数（含 UTF-8 中文，给足余量）
+      let guess = Math.min(stat.size, want * 220);
+      start = stat.size - guess;
+    }
+
+    const fd = fs.openSync(logPath, "r");
+    let text;
+    try {
+      const len = stat.size - start;
+      const buf = Buffer.alloc(Math.max(0, len));
+      if (len > 0) fs.readSync(fd, buf, 0, len, start);
+      text = buf.toString("utf8");
+    } finally { fs.closeSync(fd); }
+
+    let all = text.length === 0 ? [] : text.split(/\r?\n/);
+    // 末尾读取时，第一行可能是被截断的半个行 → 丢掉
+    if (!incremental && start > 0) all = all.slice(1);
+    // 增量读取时，最后一行可能还没写完 → 保留但也标出来
+    // ⚠️ 先过滤再截断：反过来的话只会在末尾 want 行里找，漏掉文件早处的命中（实测踩到）
+    let out = all;
+    if (filter) {
+      const f = filter.toLowerCase();
+      out = out.filter((l) => l.toLowerCase().includes(f));
+    }
+    const truncated = out.length > want;
+    if (truncated) out = out.slice(out.length - want);
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          ok: true,
+          path: logPath,
+          offset: stat.size,        // 下次增量读传它
+          incremental,
+          searchedBytes: stat.size - start,
+          returned: out.length,
+          truncated,
+          lines: out,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
   "run_hack_script",
   "执行黑客脚本（载体是 .txt：Content/HackerScripts/*.txt 或扩展 HackerScripts/，如 HackerScripts/ThemeHack.txt）",
   { script: z.string().describe("脚本路径，相对游戏 Content 目录，如 HackerScripts/ThemeHack.txt") },
