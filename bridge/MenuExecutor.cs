@@ -200,10 +200,14 @@ public static class MenuExecutor
             if (!Directory.Exists(pluginsDir)) return;
 
             // 已加载的程序集名（Pathfinder 正常路径已加载的，一律跳过）
+            // ⚠️ 按**基名**比较：Pathfinder 会把扩展插件重命名成 "KernelExtensions-<ticks>"
+            //    （以便重载时区分程序集身份），精确比名字会漏掉 → 这里再 byte-load 一份
+            //    无后缀的同名副本 → AppDomain 里出现两个 KE，连接器读到旧副本的静态字段
+            //    （2026-10-17 实测：ke.config.get 报 debug=false，而实际配置是 true）。
             var loadedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
             {
-                try { loadedNames.Add(a.GetName().Name); } catch { }
+                try { loadedNames.Add(BaseAssemblyName(a.GetName().Name)); } catch { }
             }
 
             int loaded = 0, skipped = 0;
@@ -227,4 +231,19 @@ public static class MenuExecutor
 
     private static string Str(Dictionary<string, object> p, string key) =>
         p != null && p.TryGetValue(key, out var v) ? v?.ToString() : null;
+
+    /// <summary>
+    /// 去掉 Pathfinder 给扩展插件加的重命名后缀。形如
+    /// <c>KernelExtensions-639278565351319532</c> → <c>KernelExtensions</c>；
+    /// 没有"纯数字后缀"的保持原样。
+    /// </summary>
+    private static string BaseAssemblyName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+        int dash = name.LastIndexOf('-');
+        if (dash <= 0 || dash >= name.Length - 1) return name;
+        for (int i = dash + 1; i < name.Length; i++)
+            if (!char.IsDigit(name[i])) return name;
+        return name.Substring(0, dash);
+    }
 }

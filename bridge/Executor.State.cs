@@ -102,8 +102,8 @@ public static partial class Executor
             ["name"] = comp.name,
             ["adminIP"] = comp.adminIP,
             ["adminPass"] = comp.adminPass,
-            ["ports"] = Safe(comp.ports),
-            ["portsOpen"] = SafeBytes(comp.portsOpen),
+            ["ports"] = PortStatesOf(comp),
+            ["portsOpen"] = PortStatesOf(comp).Where(o => o is Dictionary<string, object> d && d.TryGetValue("cracked", out var c) && c is bool b && b).ToList(),
             ["currentUser"] = string.IsNullOrEmpty(comp.currentUser.name) ? null : comp.currentUser.name,
             ["currentUserType"] = comp.currentUser.type,
             ["users"] = users,
@@ -146,11 +146,14 @@ public static partial class Executor
     {
         var list = os.terminal?.GetRecentTerminalHistoryList();
         if (list == null) return new Dictionary<string, object> { ["lines"] = new List<object>() };
-        var trimmed = list.Take(lines).ToList();
+        // ⚠️ 取**末尾** N 行，不是开头：这个列表是"从旧到新"的，用 Take() 会拿到最早的内容，
+        // 排查时看到的是过期输出（2026-10-17 实测踩到：lines=12 时看不到最新的命令结果）。
+        var trimmed = list.Skip(Math.Max(0, list.Count - lines)).ToList();
         return new Dictionary<string, object>
         {
             ["lines"] = trimmed,
-            ["count"] = trimmed.Count
+            ["count"] = trimmed.Count,
+            ["total"] = list.Count
         };
     }
 

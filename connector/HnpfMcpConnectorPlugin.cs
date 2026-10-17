@@ -87,11 +87,46 @@ internal static class KeReflect
     }
 
     /// <summary>
-    /// 当前 KE 程序集（若 AppDomain 里有多个副本，取最后加载的那个）。
-    /// 返回 null 表示 KE 未加载。
+    /// 当前**正在运行**的 KE 程序集。返回 null 表示 KE 未加载。
+    ///
+    /// <para>
+    /// ⚠️ 不能只靠 <c>AppDomain.GetAssemblies()</c> 的顺序挑"最后加载的"：.NET 程序集
+    /// 永远无法卸载，重进扩展/换扩展后 AppDomain 里会堆着多份 KE 副本，顺序不保证。
+    /// 2026-10-17 实测：`ke.config.get` 读到了旧副本的静态字段（debug=false，而实际配置是 true）。
+    /// 正确做法：**优先取当前插件表里 KE 插件实例所属的程序集**（那就是正在跑的那份）。
+    /// </para>
     /// </summary>
     private static System.Reflection.Assembly FindKeAssembly()
     {
+        // 1) 当前插件表里的 KE 实例（HacknetChainloader.Instance.Plugins）
+        try
+        {
+            var loader = BepInEx.Hacknet.HacknetChainloader.Instance;
+            var plugins = loader?.Plugins;
+            if (plugins != null)
+            {
+                foreach (var kv in plugins)
+                {
+                    object v = kv.Value;
+                    if (v == null) continue;
+
+                    // 插件表的值在不同版本里可能是 PluginInfo（有 Instance 属性）、
+                    // 直接是插件实例、甚至 Type。三种都试。
+                    object inst = null;
+                    try { inst = v.GetType().GetProperty("Instance")?.GetValue(v); } catch { }
+                    if (inst == null && v is Type) inst = null;      // Type 没有实例，下面单独处理
+                    var asm = (inst ?? (v is Type ? null : v))?.GetType().Assembly;
+                    if (asm == null && v is Type t2) asm = t2.Assembly;
+                    if (asm == null) continue;
+
+                    var n = asm.GetName().Name ?? "";
+                    if (n.StartsWith("KernelExtensions", StringComparison.OrdinalIgnoreCase)) return asm;
+                }
+            }
+        }
+        catch { /* 插件表不可用时退回 AppDomain 扫描 */ }
+
+        // 2) 退回：AppDomain 里最后加载的 KE 程序集
         System.Reflection.Assembly last = null;
         foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
         {

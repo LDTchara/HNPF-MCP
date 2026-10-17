@@ -9,18 +9,31 @@ public static partial class Executor
     {
         var comp = FindComputer(os, ip);
         if (port <= 0) throw new ArgumentException("port must be > 0");
-        // 原版语义：只能打开/关闭「已存在」的端口；凭空加端口属于模组行为（Pathfinder AddPort）
-        bool existed = comp.ports != null && comp.ports.Contains(port);
-        if (!existed)
+
+        // ⚠️ 原版语义：只能打开/关闭「已存在」的端口。但**不要**用 comp.ports 判断存在性 ——
+        //    Pathfinder 接管端口后，扩展节点的 comp.ports 可能是空的（2026-10-17 实测：
+        //    游戏内 probe 有 21/22/25/8080，get_computer 的 ports 却是 []）。
+        //    正确做法：端口号 → 协议名（PortManager）→ comp.GetPortState(protocol) != null。
+        string protocol = ProtocolFromPortNumber(port)
+                          ?? throw new ArgumentException($"unknown port number: {port} (not a registered port protocol)");
+
+        var states = PortStatesOf(comp);
+        string[] present = states
+            .Select(o => (o as Dictionary<string, object>)?["protocol"] as string)
+            .Where(s => !string.IsNullOrEmpty(s)).ToArray();
+        bool found = present.Any(s => string.Equals(s, protocol, StringComparison.OrdinalIgnoreCase));
+        if (!found)
             throw new ArgumentException(
-                $"port {port} not present on {comp.ip} (only existing ports can be opened; ports={Safe(comp.ports)})");
-        if (open) comp.openPort(port, os.thisComputer.ip);
-        else comp.closePort(port, os.thisComputer.ip);
+                $"port {port} ({protocol}) not present on {comp.ip} (only existing ports can be opened; "
+                + $"present={string.Join(",", present)})");
+
+        SetPortState(comp, protocol, port, os.thisComputer.ip, open);
         return new Dictionary<string, object>
         {
             ["ok"] = true,
             ["ip"] = comp.ip,
             ["port"] = port,
+            ["protocol"] = protocol,
             ["state"] = open ? "open" : "closed"
         };
     }

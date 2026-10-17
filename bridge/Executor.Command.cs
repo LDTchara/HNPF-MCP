@@ -50,21 +50,36 @@ public static partial class Executor
         // libs 里的 PathfinderAPI 版本可能没有 IsXmlId/GetCustomExeData，用反射兼容
         string xmlId = clean.StartsWith("#") ? clean : "#" + clean + "#";
         string customData = TryGetCustomExeData(xmlId);
+        string fileName = clean.Trim('#');
+        FileEntry existing = null;
+        var bin = os.thisComputer?.files?.root?.searchForFolder("bin") ?? os.thisComputer?.files?.root;
         if (customData != null)
         {
-            var bin = os.thisComputer.files?.root?.searchForFolder("bin") ?? os.thisComputer.files?.root;
-            var fileName = clean.Trim('#');
-            bool exists = false;
+            string want = fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? fileName : fileName + ".exe";
             if (bin != null)
                 foreach (var f in bin.files)
-                    if (string.Equals(f.name, fileName, StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(f.name, fileName + ".exe", StringComparison.OrdinalIgnoreCase))
-                    { exists = true; break; }
-            if (!exists && bin != null)
-                bin.files.Add(new FileEntry { name = fileName + ".exe", data = customData });
+                    if (string.Equals(f.name, want, StringComparison.OrdinalIgnoreCase)) { existing = f; break; }
+            if (existing == null && bin != null)
+            {
+                existing = new FileEntry { name = want, data = customData };
+                bin.files.Add(existing);
+            }
         }
 
-        var fullCmd = lower + (string.IsNullOrWhiteSpace(args) ? "" : " " + args.Trim());
+        // ⚠️ 关键：#XX# 是**自替换符**（文件内容里的占位符），不是可执行命令名。
+        //    真正能在终端里跑的是 bin 里的**文件名**（如 PorthackV2.exe）。
+        //    旧实现直接把 "#porthackv2#" 丢给 runCommand → "No Command #porthackv2# - Check Syntax"。
+        string runName = existing?.name;
+        if (string.IsNullOrEmpty(runName))
+        {
+            // 非自定义 exe：也尽量按 bin 里的真实文件名大小写执行（Hacknet 的命令匹配区分大小写）
+            string want = clean.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? clean : clean + ".exe";
+            if (bin != null)
+                foreach (var f in bin.files)
+                    if (string.Equals(f.name, want, StringComparison.OrdinalIgnoreCase)) { runName = f.name; break; }
+        }
+
+        var fullCmd = (runName ?? lower) + (string.IsNullOrWhiteSpace(args) ? "" : " " + args.Trim());
         var policy = HnpfMcpBridgePlugin.CheckCommandPolicy(fullCmd);
         if (policy != null) throw new ArgumentException(policy);
         os.runCommand(fullCmd);
