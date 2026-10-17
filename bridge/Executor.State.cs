@@ -110,8 +110,55 @@ public static partial class Executor
             ["daemons"] = daemons,
             ["files"] = files,
             ["firewallSolved"] = SafeBool(() => comp.firewall?.solved),
+            ["firewall"] = FirewallInfo(comp),
+            ["proxy"] = ProxyInfo(comp),
             ["links"] = Safe(comp.links)
         };
+    }
+
+    /// <summary>
+    /// 防火墙详情。
+    ///
+    /// <para>
+    /// 之前只暴露 <c>firewallSolved</c>，导致测试时**无法验证** <c>Solution="@random" Length="N"</c>
+    /// 到底生成了几位、内容是不是字面量 "<c>@random</c>"（那个 bug 只能靠翻日志的长度猜）。
+    /// 这里把 level / solutionLength / solution 原文一并给出 —— 这是调试桥，读这些是合理的。
+    /// </para>
+    /// </summary>
+    private static object FirewallInfo(Computer comp)
+    {
+        try
+        {
+            var f = comp?.firewall;
+            if (f == null) return null;
+            return new Dictionary<string, object>
+            {
+                ["level"] = ReadMember(f, "level"),
+                ["solved"] = ReadMember(f, "solved"),
+                ["solutionLength"] = ReadMember(f, "solutionLength"),
+                ["solution"] = ReadMember(f, "solution"),
+                ["additionalDelay"] = ReadMember(f, "additionalDelay"),
+                ["complexity"] = ReadMember(f, "complexity"),
+            };
+        }
+        catch { return null; }
+    }
+
+    /// <summary>代理详情：是否装了代理、是否生效中、过载剩余 tick。用于验证 addProxy / 过载类 Action。</summary>
+    private static object ProxyInfo(Computer comp)
+    {
+        try
+        {
+            if (comp == null || !comp.hasProxy) return null;
+            return new Dictionary<string, object>
+            {
+                ["hasProxy"] = comp.hasProxy,
+                ["proxyActive"] = comp.proxyActive,
+                ["proxyTime"] = ReadMember(comp, "proxyTime"),
+                ["proxyOverloadRemaining"] = ReadMember(comp, "proxyOverloadRemainingTime"),
+            };
+        }
+        catch { return null; }
     }
 
     private static void ProjectFolder(Folder folder, int depth, int maxDepth, List<object> outList)
