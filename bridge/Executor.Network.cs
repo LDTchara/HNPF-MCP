@@ -14,7 +14,7 @@ public static partial class Executor
         //    Pathfinder 接管端口后，扩展节点的 comp.ports 可能是空的（2026-10-17 实测：
         //    游戏内 probe 有 21/22/25/8080，get_computer 的 ports 却是 []）。
         //    正确做法：端口号 → 协议名（PortManager）→ comp.GetPortState(protocol) != null。
-        string protocol = ProtocolFromPortNumber(port)
+        string protocol = ProtocolFromPortNumberOnComputer(comp, port)
                           ?? throw new ArgumentException($"unknown port number: {port} (not a registered port protocol)");
 
         var states = PortStatesOf(comp);
