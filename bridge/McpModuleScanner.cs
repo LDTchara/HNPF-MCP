@@ -13,6 +13,22 @@ public static class McpModuleScanner
     private static readonly Dictionary<string, string> Descriptions = new();
 
     /// <summary>
+    /// 已退出扩展的程序集：**扫描时必须跳过**。
+    ///
+    /// <para>
+    /// .NET 程序集一旦加载就**永远无法卸载**，扩展退出后它的 Assembly 仍留在
+    /// <c>AppDomain.GetAssemblies()</c> 里。若照常扫描，会让"上个扩展的连接器"
+    /// 在新扩展里又被注册一遍 —— 表现为退出带连接器的扩展、切到没连接器的扩展后
+    /// 仍然打印 `McpTool registered`，且工具实际指向**旧程序集**（读到上一轮的静态状态）。
+    /// </para>
+    /// <para>
+    /// 退出的扩展重新进入时会以**新的 Assembly 实例**加载（字节加载），对象身份不同，
+    /// 不会被这个集合误伤。
+    /// </para>
+    /// </summary>
+    private static readonly HashSet<Assembly> Retired = new();
+
+    /// <summary>
     /// 清空缓存。扩展卸载前必须调用：Tools 里的 MethodInfo 强引用扩展程序集，
     /// 会让扩展插件无法被卸载（退出扩展后插件仍占用/文件锁定）。
     /// </summary>
@@ -20,6 +36,66 @@ public static class McpModuleScanner
     {
         Tools.Clear();
         Descriptions.Clear();
+    }
+
+    /// <summary>
+    /// 扩展退出时调用：把**所有扩展作用域的程序集**登记为 retired，然后清空缓存。
+    ///
+    /// <para>
+    /// ⚠️ 不能只退役 <see cref="Tools"/> 里那份：实测（2026-10-17）Pathfinder 会把同一个
+    /// 扩展插件程序集**加载出多个实例**（退出后日志里仍出现第二份连接器的 McpTool），
+    /// 只记当前工具所属的那一个，扫描时还会从另一个实例注册回来。
+    /// 因此这里遍历 AppDomain，凡"扩展作用域"的程序集一律退役。
+    /// </para>
+    ///
+    /// <para>
+    /// 判据不是"是否在插件表里" —— 退出时机在 quitGame 之前，此时扩展插件**还挂在**
+    /// <c>HacknetChainloader.Instance.Plugins</c> 上，按插件表判断会把连接器误判成全局插件。
+    /// 可靠判据是**加载方式**：扩展插件走字节加载（<c>Assembly.Location</c> 为空串），
+    /// 全局 BepInEx 插件走 LoadFrom（Location 有真实路径）。
+    /// </para>
+    /// </summary>
+    public static void RetireExtensionTools()
+    {
+        int retired = 0;
+        try
+        {
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (asm == typeof(McpModuleScanner).Assembly) continue;
+                if (!IsExtensionScopedAssembly(asm)) continue;
+                if (Retired.Add(asm)) retired++;
+            }
+        }
+        catch { /* 枚举失败也要清缓存 */ }
+
+        if (retired > 0)
+        {
+            try { HnpfMcpBridgePlugin.LogInfo($"McpTool: retired {retired} extension-scoped assembly(ies) (will not be re-scanned after exit)"); }
+            catch { }
+        }
+        ClearCache();
+    }
+
+    /// <summary>
+    /// 该程序集是否属于**扩展临时加载**的插件。
+    ///
+    /// <para>
+    /// 判据：字节加载的程序集 <c>Location</c> 为**空串**（扩展插件走
+    /// <c>Assembly.Load(File.ReadAllBytes(...))</c>，顺便避免文件锁）；全局 BepInEx 插件
+    /// 由 <c>LoadFrom</c> 加载，Location 是真实路径。另兼容"路径在 Extensions/ 下"的情形。
+    /// </para>
+    /// </summary>
+    private static bool IsExtensionScopedAssembly(Assembly asm)
+    {
+        try
+        {
+            string loc = asm.Location;
+            if (string.IsNullOrEmpty(loc)) return true;
+            string norm = loc.Replace('\\', '/');
+            return norm.IndexOf("/Extensions/", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+        catch { return true; }
     }
 
     public static void Scan()
@@ -31,6 +107,8 @@ public static class McpModuleScanner
         {
             // 跳过 bridge 自身与 Pathfinder/BepInEx/系统程序集（它们不会有 McpTool）
             if (asm == typeof(McpModuleScanner).Assembly) continue;
+            // 跳过**已退出扩展**的程序集：它们无法卸载，但绝不该再被注册
+            if (Retired.Contains(asm)) continue;
             Type[] types;
             try { types = asm.GetTypes(); } catch { continue; }
 

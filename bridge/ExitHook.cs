@@ -32,9 +32,10 @@ internal static class ExitToMenuFrameHook
         var os = OS.currentInstance;
         if (os == null || os.HasExitedAndEnded) return;
 
-        // 先释放 bridge 持有的扩展程序集引用（McpTool 扫描缓存），再走官方退链卸载插件。
-        // 顺序重要：缓存不清 → 扩展程序集无法卸载 → 插件"仍占用"。
-        McpModuleScanner.ClearCache();
+        // 先释放 bridge 持有的扩展程序集引用（McpTool 扫描缓存），并把这次扩展的程序集
+        // 登记为 retired（不可卸载，但以后扫描必须跳过，否则"上个扩展的连接器"会在
+        // 下一个扩展里重新注册），再走官方退链卸载插件。
+        McpModuleScanner.RetireExtensionTools();
         os.quitGame(null, null);
     }
 }

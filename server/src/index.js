@@ -620,13 +620,14 @@ async function takeSnapshot() {
 
 server.tool(
   "menu_enter_extension",
-  "在主菜单新建账号并进入扩展（程序化调用主菜单进扩展逻辑，免 UI 点击；需游戏处于主菜单）。username 省略默认 mcp。",
+  "在主菜单新建账号并进入扩展（程序化调用主菜单进扩展逻辑，免 UI 点击；需游戏处于主菜单）。username 省略默认 mcp；ext 省略默认 KernelExtensionTEST123123。",
   {
     username: z.string().optional().describe("新建账号名（SaveFileManager 会创建）"),
     pass: z.string().optional().describe("账号密码（省略自动生成）"),
+    ext: z.string().optional().describe("要进入的扩展文件夹名（省略 = KernelExtensionTEST123123）"),
   },
-  async ({ username, pass }) => {
-    const r = await call("menu.enter_extension", { username, pass });
+  async ({ username, pass, ext }) => {
+    const r = await call("menu.enter_extension", { username, pass, ext });
     return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
   }
 );
@@ -635,11 +636,12 @@ server.tool(
   "menu_load_extension_save",
   "在主菜单用存档账号进入扩展（恢复进度，对应 ExtensionsMenuScreen 的读档进扩展；需游戏处于主菜单）。**userFile 必须传纯文件名**（如 save_1.xml/save_mcp.xml），与 UI 读档一致——不要传 save_list 返回的绝对路径，否则会触发假读档（FileExists 拼账号目录前缀失败→OS.WillLoadSave=false→新建空扩展会话，所有 SaveExecutor 不触发，时钟/Flag 等不恢复）",
   {
-    userFile: z.string().describe("存档纯文件名（如 save_1.xml），不要传 save_list 的绝对路径（bridge 已用 Path.GetFileName 归一化防御）"),
+    userFile: z.string().describe("存档纯文件名（如 save_1.xml），不要传 save_list 返回的绝对路径（bridge 已用 Path.GetFileName 归一化防御）"),
     username: z.string().describe("存档用户名（save_list 返回的 name 去掉 save_ 前缀和 .xml）"),
+    ext: z.string().optional().describe("扩展文件夹名（省略 = KernelExtensionTEST123123）"),
   },
-  async ({ userFile, username }) => {
-    const r = await call("menu.load_extension_save", { userFile, username });
+  async ({ userFile, username, ext }) => {
+    const r = await call("menu.load_extension_save", { userFile, username, ext });
     return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
   }
 );
@@ -677,15 +679,28 @@ function isGameRunning() {
  * -extstart 会跳过主菜单流程导致扩展插件（KE 等）加载异常/退出不卸载——已弃用。
  */
 function scheduleAutoEnterExtension(ext, { username, pass } = {}) {
+  // 轮询节奏：200ms 起步、×1.7 指数退避、封顶 2s。
+  //   热启动（游戏已在主菜单 / 扩展已加载）→ 首探即中，省掉以前固定 5s 的干等；
+  //   冷启动（游戏刚拉起要 20~45s）→ 退避后稳定在 2s 一次，也不至于空转。
+  // 总预算 60s：实测从 launch_game 到 bridge 可用约 45s，旧 30s 上限会误报超时。
+  const TOTAL_BUDGET_MS = 60000;
+  const FIRST_DELAY_MS = 200;
+  const MAX_DELAY_MS = 2000;
+  const BACKOFF = 1.7;
+
+  const startedAt = Date.now();
   (async () => {
-    let attempts = 0;
-    // HN 是老游戏，加载很快：轮询 5s×6 次 = 最长 30s；menu 处理 call 超时 10s
-    while (attempts++ < 6) {
-      await new Promise((r) => setTimeout(r, 5000));
+    let delay = FIRST_DELAY_MS;
+    let probes = 0;
+    let lastErr = null;
+
+    while (Date.now() - startedAt < TOTAL_BUDGET_MS) {
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(Math.round(delay * BACKOFF), MAX_DELAY_MS);
+      probes++;
       try {
         await ensureBridge();
-        // 主菜单阶段 MenuExecutor 处理 menu.enter_extension；进扩展后 OS 会话接管，
-        // 若已进扩展（响应非 ok）则停止
+        // 主菜单阶段 MenuExecutor 处理 menu.enter_extension；进扩展后 OS 会话接管
         const r = await bridge.call("menu.enter_extension", { ext, username, pass }, 10000);
         if (r?.ok) {
           // 防假阳性：menu.enter_extension 返回 ok 不代表真进扩展（旧 bug：同名账号 AddUser false
@@ -693,8 +708,9 @@ function scheduleAutoEnterExtension(ext, { username, pass } = {}) {
           await new Promise((r2) => setTimeout(r2, 3000));
           try {
             const st = await bridge.call("state.get", {}, 5000);
+            const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
             if (st?.thisComputerIP) {
-              process.stderr.write(`[hnpf] 已自动进扩展 ${ext}（主菜单路径，验证通过）\n`);
+              process.stderr.write(`[hnpf] 已自动进扩展 ${ext}（主菜单路径，验证通过，耗时 ${secs}s / ${probes} 次探测）\n`);
             } else {
               process.stderr.write(`[hnpf] 警告：menu.enter_extension 返回 ok 但未检测到扩展会话——账号/插件加载可能失败（假阳性）\n`);
             }
@@ -705,11 +721,17 @@ function scheduleAutoEnterExtension(ext, { username, pass } = {}) {
         }
         // 有响应说明 MenuExecutor 已处理（成功或失败）——已过主菜单阶段，停止，避免重复建账号
         if (r != null) return;
-      } catch {
-        // 管道未就绪/超时（主菜单未到）→ 继续等
+      } catch (e) {
+        lastErr = e;   // 管道未就绪/超时（主菜单未到）→ 继续退避重试
       }
     }
-    process.stderr.write("[hnpf] 自动进扩展超时（30s）——游戏可能未启动成功或进扩展出错，请手动 menu_enter_extension\n");
+
+    const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
+    process.stderr.write(
+      `[hnpf] 自动进扩展超时（${secs}s / ${probes} 次探测）——游戏可能未启动成功或进扩展出错` +
+      (lastErr ? `；最后一次错误：${lastErr.message || lastErr}` : "") +
+      "。可手动调用 menu_enter_extension 重试。\n"
+    );
   })();
 }
 
@@ -784,8 +806,8 @@ server.tool(
     child.stderr?.on("data", () => { });
     child.unref();
     const note = ext
-      ? `游戏正常启动；后台自动进扩展 ${ext}（主菜单路径，约 30-60s，插件正常加载）。${modeNote}`
-      : `游戏启动中，稍候约 20-30s 后 bridge 会自动连上。${modeNote}`;
+      ? `游戏正常启动；后台自动进扩展 ${ext}（主菜单路径，通常 5~15s，冷启动最多 60s，插件正常加载）。${modeNote}`
+      : `游戏启动中，bridge 通常 5~15s 内连上（冷启动最多 60s）。${modeNote}`;
     if (ext) scheduleAutoEnterExtension(ext, { username });
     return { content: [{ type: "text", text: JSON.stringify({ ok: true, pid: child.pid, exe, args, ext: ext || null, note }, null, 2) }] };
   }

@@ -59,6 +59,10 @@ public static class MenuExecutor
         if (string.IsNullOrEmpty(ext)) ext = "KernelExtensionTEST123123";
 
         // 1. 加载扩展 info 并设置 ActiveExtensionInfo（否则 OS.LoadContent → LoadNewExtensionSession(null) NRE）
+        // 进入新扩展前，把上一个扩展遗留的工具程序集退役掉
+        // （手动退出扩展不会经过 exit_to_menu 钩子，这里兜住）
+        try { McpModuleScanner.RetireExtensionTools(); } catch { }
+
         var info = LoadExtensionInfo(ext);
         SetActiveExtensionInfo(info);
 
