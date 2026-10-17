@@ -19,8 +19,40 @@ public static partial class Executor
         ["hasMission"] = os.currentMission != null,
         ["missionTitle"] = os.currentMission?.postingTitle,
         ["terminalText"] = SafeTerminal(os),
-        ["admin"] = os.thisComputer != null && os.thisComputer.currentUser.type >= 2
+        ["admin"] = os.thisComputer != null && os.thisComputer.currentUser.type >= 2,
+        ["trace"] = TraceInfo(os)
     };
+
+    /// <summary>
+    /// 追踪（trace）状态。
+    ///
+    /// <para>
+    /// 实测背景：原版 <c>Computer.hostileActionTaken()</c> 只在
+    /// **目标就是当前所连节点**且 <c>traceTime &gt; 0</c> 时才会 <c>traceTracker.start(traceTime)</c>。
+    /// 所以"破解自己机器"会起追踪（玩家机 trace=300），而打过 `<trace time="-1"/>` 的节点永不追踪。
+    /// 之前 MCP 看不到这个状态，测试时只能靠"等 300 秒看会不会蓝屏"——把 active/剩余时间暴露出来即可断言。
+    /// </para>
+    /// </summary>
+    private static object TraceInfo(OS os)
+    {
+        try
+        {
+            object tt = ReadMember(os, "traceTracker");
+            if (tt == null) return null;
+            object activeObj = ReadMember(tt, "active");
+            bool active = activeObj is bool b && b;
+            object target = ReadMember(tt, "target");
+            return new Dictionary<string, object>
+            {
+                ["active"] = active,
+                ["remaining"] = ReadMember(tt, "timer"),
+                ["startingTimer"] = ReadMember(tt, "startingTimer"),
+                ["targetIp"] = ReadMember(target, "ip"),
+                ["connectedTraceTime"] = ReadMember(os.connectedComp, "traceTime"),
+            };
+        }
+        catch { return null; }
+    }
 
     /// <summary>网络地图。summary=true 只返回核心字段（ip/idName/name/visible/connected）——大响应裁剪（B4）。</summary>
     private static object GetNetworkMap(OS os, bool summary = false)
