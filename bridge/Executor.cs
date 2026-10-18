@@ -68,6 +68,12 @@ public static partial class Executor
     private static object Execute(OS os, RpcRequest req)
     {
         var p = req.Params;
+
+        // 只读模式：在分发前拒绝写方法（Safety.ReadOnly；cfg 热加载即时生效）
+        if (HnpfMcpBridgePlugin.IsBlockedByReadOnly(req.Method))
+            throw new InvalidOperationException(
+                $"read-only mode: method '{req.Method}' is blocked by Safety.ReadOnly");
+
         switch (req.Method)
         {
             case "ping":
@@ -83,11 +89,20 @@ public static partial class Executor
             case "state.get":
                 return GetState(os);
 
+            case "process.list":
+                return GetProcesses(os);
+
+            case "process.kill":
+                return KillProcess(os, IntParam(p, "pid"));
+
             case "network.map":
                 return GetNetworkMap(os, BoolParam(p, "summary"));
 
             case "computer.get":
                 return GetComputer(os, Str(p, "ip"));
+
+            case "daemon.list":
+                return GetDaemons(os, Str(p, "ip"));
 
             case "fs.list":
                 return ListFiles(os, Str(p, "ip"), Str(p, "path"));
@@ -100,6 +115,17 @@ public static partial class Executor
 
             case "fs.append":
                 return AppendFile(os, Str(p, "ip"), Str(p, "path"), Str(p, "file"), Str(p, "content"));
+
+            case "fs.delete":
+                return DeleteFile(os, Str(p, "ip"), Str(p, "path"), Str(p, "file"));
+
+            case "fs.move":
+                return MoveFile(os, Str(p, "ip"), Str(p, "path"), Str(p, "file"),
+                    Str(p, "toPath"), Str(p, "toFile"));
+
+            case "fs.replace":
+                return ReplaceInFile(os, Str(p, "ip"), Str(p, "path"), Str(p, "file"),
+                    Str(p, "target"), Str(p, "replacement"));
 
             case "game.execute_command":
                 return ExecuteCommand(os, Str(p, "cmd"));
@@ -153,6 +179,12 @@ public static partial class Executor
 
             case "firewall.crack":
                 return FirewallCrack(os, Str(p, "ip"));
+
+            case "firewall.analyze":
+                return FirewallAnalyze(os, Str(p, "ip"));
+
+            case "firewall.solve":
+                return FirewallSolve(os, Str(p, "ip"), Str(p, "solution"));
 
             case "mission.submit":
                 return MissionSubmit(os, Str(p, "sender"), Str(p, "details"));
@@ -236,7 +268,9 @@ public static partial class Executor
 
     private static Computer FindComputer(OS os, string ip)
     {
-        if (string.IsNullOrEmpty(ip)) return os.connectedComp;
+        // ip 省略：优先当前连接节点；未连接时回退本机（与 vanilla ls/cat 的 currentFolder 语义一致，
+        // 否则 fs.* 在未连接时会拿到 null 触发 NRE）
+        if (string.IsNullOrEmpty(ip)) return os.connectedComp ?? os.thisComputer;
         var comp = Programs.getComputer(os, ip);
         if (comp == null) throw new ArgumentException($"computer not found: {ip}");
         return comp;
@@ -300,6 +334,11 @@ public static partial class Executor
     private static object SafeBool(Func<object> getter)
     {
         try { return getter() ?? false; } catch { return false; }
+    }
+
+    private static bool SafeBool(Func<bool> getter)
+    {
+        try { return getter(); } catch { return false; }
     }
 
     private static string SafeStr(Func<object> getter)

@@ -16,6 +16,8 @@ const server = net.createServer((sock) => {
 
 function fakeResult(method, params = {}) {
   switch (method) {
+    case "auth":
+      return { ok: true, authenticated: true };
     case "ping":
       return { pong: true, version: "0.1.0-fake", os: "hacknet+pathfinder" };
     case "state.get":
@@ -96,6 +98,37 @@ function fakeResult(method, params = {}) {
       return { ok: true, typed: params.text };
     case "os.memory":
       return { ip: params.ip || "cur", memory: { dataBlocks: ["block1"], fileFragments: { "pass_frag": "abc123" } } };
+    case "process.list":
+      return {
+        count: 2,
+        ramFree: 42,
+        ramTotal: 200,
+        exes: [
+          { pid: 1, name: "Terminal", identifierName: "Terminal", type: "TerminalExe", ramCost: 8, x: 0, y: 0, width: 252, height: 8, targetIP: "", isExiting: false, needsRemoval: false },
+          { pid: 2, name: "FakeExe", identifierName: "FakeExe", type: "FakeExe", ramCost: 12, x: 0, y: 20, width: 252, height: 12, targetIP: "10.0.0.2", isExiting: false, needsRemoval: false },
+        ],
+      };
+    case "process.kill":
+      return { ok: true, killed: { pid: params.pid, identifierName: "FakeExe", type: "FakeExe" } };
+    case "daemon.list":
+      return {
+        ip: params.ip || "cur",
+        count: 2,
+        daemons: [
+          { index: 0, name: "Message Board", type: "MessageBoardDaemon", isListed: true, fields: { "BoardName": "/el/", "threads.count": 2 } },
+          { index: 1, name: "Upload Server", type: "UploadServerDaemon", isListed: true, fields: { "STORAGE_FOLDER_FOLDERNAME": "Uploads", "files.count": 3 } },
+        ],
+      };
+    case "fs.delete":
+      return { ok: true, file: params.file, deleted: true };
+    case "fs.move":
+      return { ok: true, file: params.toFile || params.file, folder: params.toPath || params.path || "/" };
+    case "fs.replace":
+      return { ok: true, file: params.file, occurrences: 2, bytesBefore: 30, bytesAfter: 28 };
+    case "firewall.analyze":
+      return { ip: params.ip || "cur", solved: false, solutionLength: 6, analysisPasses: 1, additionalDelay: 0, complexity: 1 };
+    case "firewall.solve":
+      return { ok: true, solved: true, attempted: true, ip: params.ip || "cur" };
     case "game.exit_to_menu":
       return { ok: true, message: "exit to main menu requested" };
     case "events.get":

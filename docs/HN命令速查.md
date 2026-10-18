@@ -3,18 +3,19 @@
 > 来源：Hacknet 5.069 源码（`ProgramList.cs` / `Helpfile.cs` / `ProgramRunner.cs`）+ Pathfinder 自定义命令。
 > 用途：AI 执行 `execute_command` 时的正确用法参考。HN 指令与 Unix 相似但**存在关键差异**，先读本表再动手。
 
-## 一、内置命令（23 + 补充）
+## 一、内置命令（Helpfile 26 条 + 补充）
 
 | 命令 | 语法 | 说明 | 与 Unix 的差异/注意 |
 |---|---|---|---|
 | `ls` | `ls` | 列出当前目录文件 | 无参数 |
 | `cd` | `cd [文件夹]` | 切换目录 | 无参数时**不回到 home**（保持当前） |
-| `probe` | `probe` | 扫描当前连接机器的**开放端口和安防等级** | 连接后必做；Unix 无对应 |
+| `probe` | `probe` | 扫描当前连接机器的**开放端口**（含破解所需端口数、代理/防火墙状态） | 连接后必做；Unix 无对应 |
 | `scan` | `scan` | 扫描当前连接机器的**链接**并加入地图 | 连接后必做 |
 | `ps` | `ps` | 列出正在运行的进程和 PID | 类似 Unix |
 | `kill` | `kill [PID]` | 杀死指定 PID 进程 | 类似 Unix |
 | `connect` | `connect [ip]` | 连接外部电脑 | 需先 scan/probe 知道 IP |
 | `dc` / `disconnect` | `disconnect` | 断开当前连接 | 别名 dc |
+| `shell` | `shell` | 在目标机打开远程 shell（代理过载/IP 陷阱） | 每节点只能开一个；用 shell_drive 驱动 |
 | `cat` | `cat [文件名]` | 显示文件内容 | 类似 Unix |
 | `scp` | `scp [文件名] [可选:目标]` | **从远程机器下载文件到本地**（默认 /bin） | ⚠️ **方向与 Unix scp 相反**：HN 的 scp 是从远程拷回本地，不是推上去 |
 | `upload` | `upload [本地文件路径]` | 把本地文件**上传到当前连接目录** | 与 scp 相反方向；Unix 用 scp 做 |
@@ -32,13 +33,18 @@
 | `help` | `help [页码]` | 分页显示命令列表 | 游戏内权威 help |
 | `clear` | `clear` | 清空终端 | 类似 Unix |
 
-## 二、内置可执行程序（在 /bin 下，运行需带 .exe）
+## 二、内置可执行程序（在 /bin 下；`.exe` 可省略）
 
 | 程序 | 用途 | 注意 |
 |---|---|---|
 | `porthack.exe` | 破解开放端口 | 目标需已有开放端口（`probe` 确认）；交互式选择端口 |
 | `forkbomb.exe` | 叉爆：快速消耗目标内存 | 交互式选进程；可致目标重启/崩溃 |
 | `shell.exe` | 远程 shell（含代理过载与 IP 陷阱能力） | 交互式远程操作 |
+| `securitytracer.exe` | 安全追踪器 | 查看管理员追踪状态 |
+| `tutorial.exe` | 教程 | 新手用 |
+| `notes.exe` | 便签 | 类似 addNote |
+
+> ⚠️ **`.exe` 可省略**：执行时文件名会去掉 `.exe` 再匹配（`porthack` 与 `porthack.exe` 等价）。
 
 **Shell 与代理（驱动流程，shell_drive 工具）**：
 - **打开 shell**：在目标节点上运行 `shell` 指令（`execute_command "shell"`）——**每个节点只能开一个 shell**；shell 是低内存小型进程，运行在单一主机上，本地操控
@@ -46,9 +52,6 @@
 - **Cancel（取消）**：`shell_drive { action: "cancel" }`——停止过载
 - **Exit（退出）**：`shell_drive { action: "exit" }`——关闭当前 shell（每节点一个，关了可重开）
 - **Trap（陷阱）**：shell 的另一种模式（警告外来 shell + 对远程连接者 forkbomb 反击）
-| `securitytracer.exe` | 安全追踪器 | 查看管理员追踪状态 |
-| `tutorial.exe` | 教程 | 新手用 |
-| `notes.exe` | 便签 | 类似 addNote |
 
 ## 三、Pathfinder 自定义命令（registry 可查）
 
@@ -56,14 +59,15 @@
 |---|---|
 | `loadmission` | 加载任务（Pathfinder 调试） |
 | `loadactions` | 加载动作列表 |
-| `dscan` | 调试扫描 |
+
+> `dscan` 是**原版**调试命令（非 Pathfinder 自定义），此处不单列。
 
 （KE 等模组可注册更多自定义命令，`registry` 的 commands 字段为准。）
 
 ## 四、HN vs Unix 关键差异速记（AI 必读）
 
 1. **`scp` 方向相反**：HN 的 `scp 文件名` 是**从远程下载到本地**；上传用 `upload`。用 Unix 直觉会做反。
-2. **`exe` 是列表不是执行**：看 /bin 有什么用 `exe`；运行程序要写 `xxx.exe`。
+2. **`exe` 是列表不是执行**：看 /bin 有什么用 `exe`；运行程序写 `xxx` 或 `xxx.exe` 均可（扩展名可省略）。
 3. **连接三连**：`connect ip` → `probe`（端口/安防）→ `scan`（链接），缺一不可。
 4. **防火墙流程**：`analyze` → 得到方案 → `solve [方案]`，顺序错会失败。
 5. **无确认删除**：`rm *` 直接清空，没有确认提示。

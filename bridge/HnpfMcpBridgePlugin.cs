@@ -14,7 +14,9 @@ namespace HnpfMcpBridge;
 /// 供 hnpf-mcp-server（MCP 服务器）连接。所有游戏操作在主线程（OSUpdateEvent）执行。
 ///
 /// 安装：把编译出的 HnpfMcpBridge.dll 复制到游戏目录 BepInEx/plugins/ 下。
-/// 配置：BepInEx/config/com.HnpfMcp.Bridge.cfg 里 PipeName / PipeToken / ReadOnly。
+/// 配置：BepInEx/config/com.HnpfMcp.Bridge.cfg
+///   [Pipe] Name / Token / AutoToken（Token 空 + AutoToken=true 时自动生成）
+///   [Safety] ReadOnly / AllowedCommands / BlockedCommands（cfg 热加载）。
 /// </summary>
 [BepInPlugin(ModGUID, ModName, Version)]
 public class HnpfMcpBridgePlugin : HacknetPlugin
@@ -23,11 +25,34 @@ public class HnpfMcpBridgePlugin : HacknetPlugin
     public const string ModName = "HNPF-MCP-Bridge";
     public const string Version = "0.1.0";
     /// <summary>构建自检版本：每次改动递增，ping/get_state 可见，用于确认游戏里跑的是不是最新 DLL。</summary>
-    public const string BuildVersion = "2026-09-20-1256";
+    public const string BuildVersion = "2026-10-18-2330";
 
     private static HnpfMcpBridgePlugin _instance;
 
     public static PipeServer Pipe { get; private set; }
+
+    /// <summary>只读模式（Safety.ReadOnly）。Executor / MenuExecutor 在分发前据此拒绝写方法。</summary>
+    public static bool ReadOnly => _readOnly;
+
+    /// <summary>
+    /// 只读模式下会被拒绝的写方法名单（与 Executor/MenuExecutor 的 method 名一致）。
+    /// 读方法（ping/state.get/fs.list/...）不受影响。
+    /// </summary>
+    private static readonly HashSet<string> WriteMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "fs.write", "fs.append", "fs.delete", "fs.move", "fs.replace",
+        "game.execute_command", "game.connect", "game.disconnect", "game.run_action",
+        "game.run_hack_script", "game.launch_exe", "game.save", "game.exit_to_menu",
+        "port.open", "port.close", "admin.take",
+        "firewall.crack", "firewall.analyze", "firewall.solve",
+        "flags.set", "flags.clear", "mission.submit", "hub.accept",
+        "shell.drive", "terminal.type", "process.kill",
+        "menu.enter_extension", "menu.load_extension_save",
+    };
+
+    /// <summary>只读模式下该方法是否应被拒绝。</summary>
+    public static bool IsBlockedByReadOnly(string method)
+        => _readOnly && !string.IsNullOrEmpty(method) && WriteMethods.Contains(method);
     public static string LastConnectedIp { get; set; }
     public static string LastMissionTitle { get; set; }
 

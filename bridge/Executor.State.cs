@@ -13,8 +13,10 @@ public static partial class Executor
         ["homeNodeID"] = os.homeNodeID,
         ["navigationPath"] = Safe(os.navigationPath),
         ["thisComputerIP"] = os.thisComputer?.ip,
-        ["ramFree"] = SafeInt(() => GetRamValue(os, "ramAvaliable")),
-        ["ramTotal"] = SafeInt(() => GetRamValue(os, "ramTotal")),
+        // 修复：ramAvaliable / totalRam 是 OS 的字段（不是 RamModule 的），且 totalRam 不叫 ramTotal
+        ["ramFree"] = SafeInt(() => os.ramAvaliable),
+        ["ramTotal"] = SafeInt(() => os.totalRam),
+        ["media"] = MediaInfo(),
         ["flags"] = Safe(os.Flags?.Flags),
         ["hasMission"] = os.currentMission != null,
         ["missionTitle"] = os.currentMission?.postingTitle,
@@ -123,7 +125,9 @@ public static partial class Executor
             foreach (var d in comp.daemons)
                 daemons.Add(new Dictionary<string, object>
                 {
-                    ["name"] = SafeStr(() => d.name)
+                    ["name"] = SafeStr(() => d.name),
+                    ["type"] = d.GetType().Name,
+                    ["isListed"] = SafeBool(() => d.isListed),
                 });
         }
 

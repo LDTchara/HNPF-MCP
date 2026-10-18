@@ -166,7 +166,7 @@ server.tool(
   "在游戏内终端执行命令（connect/cd/ls/cat/scp/sudo 等）。输出显示在游戏内终端；传 waitMs>0 时等待并连同 terminal_history 一起返回（同步输出）。",
   {
     cmd: z.string().describe("要执行的终端命令，如 'connect 10.0.0.2'"),
-    waitMs: z.number().optional().describe("等待毫秒数后抓取命令输出一并返回（默认 0=异步，建议 400-800；长命令如 scp 大文件可加大）"),
+    waitMs: z.number().int().optional().describe("等待毫秒数后抓取命令输出一并返回（默认 0=异步，建议 400-800；长命令如 scp 大文件可加大）"),
   },
   async ({ cmd, waitMs }) => {
     const r = await call("game.execute_command", { cmd });
@@ -207,7 +207,7 @@ server.tool(
 server.tool(
   "open_port",
   "打开目标节点端口（渗透提权关键步骤）",
-  { ip: z.string().optional().describe("目标 IP；省略则当前连接节点"), port: z.number().describe("端口号，如 22") },
+  { ip: z.string().optional().describe("目标 IP；省略则当前连接节点"), port: z.number().int().positive().describe("端口号，如 22") },
   async ({ ip, port }) => {
     const r = await call("port.open", { ip, port });
     return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
@@ -217,7 +217,7 @@ server.tool(
 server.tool(
   "close_port",
   "关闭目标节点端口",
-  { ip: z.string().optional().describe("目标 IP；省略则当前连接节点"), port: z.number() },
+  { ip: z.string().optional().describe("目标 IP；省略则当前连接节点"), port: z.number().int().positive() },
   async ({ ip, port }) => {
     const r = await call("port.close", { ip, port });
     return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
@@ -257,7 +257,7 @@ server.tool(
 server.tool(
   "terminal_history",
   "读取游戏终端最近输出（命令结果在这里看）",
-  { lines: z.number().optional().describe("行数，默认 15，最多 30") },
+  { lines: z.number().int().optional().describe("行数，默认 15，最多 200") },
   async ({ lines }) => {
     const r = await call("terminal.history", { lines: lines ?? 15 });
     return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
@@ -270,9 +270,9 @@ server.tool(
     + "这是「控制台日志」的可读来源 —— 游戏用 Start-Process 启动时控制台内容与这份文件同源。"
     + "支持增量：把上次返回的 offset 再传进来，只返回之后的新行。",
   {
-    lines: z.number().optional().describe("返回末尾多少行，默认 50，最多 5000"),
+    lines: z.number().int().optional().describe("返回末尾多少行，默认 50，最多 5000"),
     filter: z.string().optional().describe("只返回包含该子串的行（大小写不敏感）"),
-    offset: z.number().optional().describe("上次返回的 offset（字节位置）；传入时只返回该位置之后的新内容"),
+    offset: z.number().int().optional().describe("上次返回的 offset（字节位置）；传入时只返回该位置之后的新内容"),
     path: z.string().optional().describe("自定义日志路径（默认 HNPF_LOG 或 <游戏目录>/BepInEx/LogOutput.log）"),
   },
   async ({ lines, filter, offset, path }) => {
@@ -313,6 +313,8 @@ server.tool(
     } finally { fs.closeSync(fd); }
 
     let all = text.length === 0 ? [] : text.split(/\r?\n/);
+    // 文件以换行结尾时 split 会产生一个末尾空串：先去掉，否则 truncated 会误报、行数也会多 1
+    if (all.length > 0 && all[all.length - 1] === "") all.pop();
     // 末尾读取时，第一行可能是被截断的半个行 → 丢掉
     if (!incremental && start > 0) all = all.slice(1);
     // 增量读取时，最后一行可能还没写完 → 保留但也标出来
@@ -386,7 +388,7 @@ server.tool(
 server.tool(
   "get_events",
   "增量拉取游戏事件（node.connected/disconnected、command.executed、mission.changed、game.loaded/saved）。传上次返回的 nextId 作为 since。",
-  { since: z.number().optional().describe("上次 nextId，省略则返回全部缓冲") },
+  { since: z.number().int().optional().describe("上次 nextId，省略则返回全部缓冲") },
   async ({ since }) => {
     const r = await call("events.get", { since: since ?? 0 });
     return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
@@ -418,7 +420,8 @@ server.tool(
   "调用模组 [McpTool] 专属工具",
   { tool: z.string().describe("工具名，先 modtool_list 查看"), params: z.record(z.string(), z.any()).optional().describe("参数") },
   async ({ tool, params }) => {
-    const r = await call("modtool.call", { tool, ...(params ?? {}) });
+    // tool 放最后：params 里若也带 tool 键，不允许覆盖实际调用的工具名
+    const r = await call("modtool.call", { ...(params ?? {}), tool });
     return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
   }
 );
@@ -440,6 +443,75 @@ server.tool(
   async ({ ip, path, file, content }) => {
     const r = await call("fs.append", { ip, path, file, content });
     return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "delete_file",
+  "删除目标节点上的文件（等价终端 rm；写操作，受 bridge Safety.ReadOnly 约束）",
+  {
+    ip: z.string().optional().describe("目标 IP；省略则当前连接节点"),
+    path: z.string().optional().describe("目录路径，默认 /"),
+    file: z.string().describe("文件名"),
+  },
+  async ({ ip, path, file }) => {
+    const r = await call("fs.delete", { ip, path, file });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "move_file",
+  "移动/重命名目标节点上的文件（等价终端 mv；写操作）",
+  {
+    ip: z.string().optional().describe("目标 IP；省略则当前连接节点"),
+    path: z.string().optional().describe("源目录路径，默认 /"),
+    file: z.string().describe("源文件名"),
+    toPath: z.string().optional().describe("目标目录路径（省略 = 同目录，即重命名）"),
+    toFile: z.string().optional().describe("目标文件名（省略 = 保持原名）"),
+  },
+  async ({ ip, path, file, toPath, toFile }) => {
+    const r = await call("fs.move", { ip, path, file, toPath, toFile });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "replace_in_file",
+  "在目标节点文件内做文本替换（等价终端 replace；写操作）",
+  {
+    ip: z.string().optional().describe("目标 IP；省略则当前连接节点"),
+    path: z.string().optional().describe("目录路径，默认 /"),
+    file: z.string().describe("文件名"),
+    target: z.string().describe("要查找的文本"),
+    replacement: z.string().describe("替换成的文本（可为空串 = 删除）"),
+  },
+  async ({ ip, path, file, target, replacement }) => {
+    const r = await call("fs.replace", { ip, path, file, target, replacement });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "transfer_file",
+  "跨节点复制文件（读源文件再写到目标节点，等价 scp/upload 的组合语义）",
+  {
+    fromIp: z.string().optional().describe("源节点 IP；省略则当前连接节点"),
+    fromPath: z.string().optional().describe("源目录路径，默认 /"),
+    file: z.string().describe("源文件名"),
+    toIp: z.string().optional().describe("目标节点 IP；省略则当前连接节点"),
+    toPath: z.string().optional().describe("目标目录路径，默认 /"),
+    toFile: z.string().optional().describe("目标文件名（省略 = 同名）"),
+  },
+  async ({ fromIp, fromPath, file, toIp, toPath, toFile }) => {
+    const r = await call("fs.read", { ip: fromIp, path: fromPath, file });
+    const w = await call("fs.write", { ip: toIp, path: toPath, file: toFile ?? file, content: r.data });
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({ ok: true, from: { ip: fromIp ?? null, path: fromPath ?? "/", file }, to: { ip: toIp ?? null, path: toPath ?? "/", file: toFile ?? file }, bytes: r.size, write: w }, null, 2),
+      }],
+    };
   }
 );
 
@@ -489,6 +561,9 @@ server.tool(
   {},
   async () => {
     const r = await call("game.save");
+    // bridge game.save 只是发出存档请求（os.saveGame 同步落盘但 SaveEvent 帧末才推送），
+    // 等一小段时间再快照，避免复制到上一份存档
+    await new Promise((x) => setTimeout(x, 400));
     const snapshot = await takeSnapshot();
     return { content: [{ type: "text", text: JSON.stringify({ ...r, snapshot }, null, 2) }] };
   }
@@ -569,11 +644,64 @@ server.tool(
 );
 
 server.tool(
+  "get_processes",
+  "读取当前运行中的进程（os.exes 结构化）：PID / 类型 / RAM 成本 / 位置 / 是否退出中；同时返回 RAM 可用/总量",
+  {},
+  async () => {
+    const r = await call("process.list");
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "kill_exe",
+  "按 PID 结束运行中的进程（等价终端 kill；写操作）。先用 get_processes 查 PID",
+  { pid: z.number().int().positive().describe("进程 PID（见 get_processes）") },
+  async ({ pid }) => {
+    const r = await call("process.kill", { pid });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "get_daemons",
+  "读取目标节点所有 daemon 的结构化状态（类型 + 标量字段 + 集合计数）。覆盖原版 flavor daemon（PointClicker/SongChanger/HeartMonitor/UploadServer/WebServer/Database/Logo/Markov 等）；邮件/IRC/论坛/任务板另有专用工具",
+  { ip: z.string().optional().describe("目标 IP；省略则当前连接/本机") },
+  async ({ ip }) => {
+    const r = await call("daemon.list", { ip });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
   "firewall_crack",
-  "防火墙直改（A6，调试/验收场景）：将目标防火墙 firewall.solved 直接置 true（跳过 analyze→solve 流程）；无防火墙返回 solved=false。仅用于测试/验收，正常游玩请走 analyze→solve。",
+  "防火墙直改（调试/验收场景）：将目标防火墙 firewall.solved 直接置 true（跳过 analyze→solve 流程）；无防火墙返回 solved=false。仅用于测试/验收，正常游玩请走 analyze→solve。",
   { ip: z.string().optional().describe("目标 IP；省略则当前连接/本机") },
   async ({ ip }) => {
     const r = await call("firewall.crack", { ip });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "analyze_firewall",
+  "对目标机执行一次防火墙 analyze（等价终端 analyze；会触发目标 hostileActionTaken/追踪）。返回 solved/长度/分析次数",
+  { ip: z.string().optional().describe("目标 IP；省略则当前连接/本机") },
+  async ({ ip }) => {
+    const r = await call("firewall.analyze", { ip });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "solve_firewall",
+  "对目标机尝试一次防火墙 solve（等价终端 solve；写操作）。solution 可先用 get_computer 的 firewall.solution 读取",
+  {
+    ip: z.string().optional().describe("目标 IP；省略则当前连接/本机"),
+    solution: z.string().describe("防火墙解（get_computer.firewall.solution）"),
+  },
+  async ({ ip, solution }) => {
+    const r = await call("firewall.solve", { ip, solution });
     return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
   }
 );
@@ -598,6 +726,9 @@ const TOOL_TO_METHOD = {
   run_hack_script: "game.run_hack_script", run_action: "game.run_action", launch_exe: "game.launch_exe",
   write_file: "fs.write", append_file: "fs.append",
   open_port: "port.open", close_port: "port.close", take_admin: "admin.take", firewall_crack: "firewall.crack",
+  analyze_firewall: "firewall.analyze", solve_firewall: "firewall.solve",
+  delete_file: "fs.delete", move_file: "fs.move", replace_in_file: "fs.replace",
+  kill_exe: "process.kill",
   set_flag: "flags.set", clear_flag: "flags.clear",
   save_game: "game.save", exit_to_menu: "game.exit_to_menu",
   submit_mission: "mission.submit", hub_accept: "hub.accept",
@@ -607,7 +738,7 @@ const TOOL_TO_METHOD = {
 
 server.tool(
   "run_batch",
-  "批量串行执行**游戏内指令/动作类**工具（对齐 DSL-AITOOL act 语义：批量在游戏内发指令，不是多工具查询批量）。steps 数组，每步 { tool, args? }；支持工具：execute_command/connect/disconnect/run_action/run_hack_script/launch_exe/write_file/append_file/open_port/close_port/take_admin/set_flag/clear_flag/save_game/exit_to_menu/submit_mission/hub_accept/shell_drive/terminal_type/menu_enter_extension/menu_load_extension_save。**只读查询类（get_state/read_file/terminal_history/mail/irc/board/events/registry/modtool_list/get_flags/save_list/ping/hub_list/os_memory 等）不在批量——请直接调用对应工具**。默认任一步失败即中断；continueOnError=true 则失败记录后继续。每步桥接超时 8s。",
+  "批量串行执行**游戏内指令/动作类**工具（不是多工具查询批量）。steps 数组，每步 { tool, args? }；支持 28 个动作类工具：execute_command/connect/disconnect/run_action/run_hack_script/launch_exe/write_file/append_file/delete_file/move_file/replace_in_file/open_port/close_port/take_admin/firewall_crack/analyze_firewall/solve_firewall/set_flag/clear_flag/save_game/exit_to_menu/submit_mission/hub_accept/shell_drive/terminal_type/kill_exe/menu_enter_extension/menu_load_extension_save。**只读查询类（get_state/get_processes/get_daemons/read_file/terminal_history/mail/irc/board/events/registry/modtool_list/get_flags/save_list/ping/hub_list/os_memory 等）不在批量——请直接调用对应工具**。默认任一步失败即中断；continueOnError=true 则失败记录后继续。每步桥接超时 8s。",
   {
     steps: z.array(z.object({
       tool: z.string().describe("游戏内指令/动作类工具名（如 execute_command / connect / run_action / set_flag / terminal_type）"),
@@ -688,7 +819,7 @@ async function takeSnapshot() {
     while (snaps.length > SNAPSHOT_KEEP) {
       fs.unlinkSync(path.join(SNAPSHOT_DIR, snaps.shift()));
     }
-    return { ok: true, file: dest, source: pick.name, extension: pick.extension || null, current: !!pick.current, total: Math.min(snaps.length + 1, SNAPSHOT_KEEP) };
+    return { ok: true, file: dest, source: pick.name, extension: pick.extension || null, current: !!pick.current, total: Math.min(snaps.length, SNAPSHOT_KEEP) };
   } catch (e) {
     return { ok: false, reason: String(e.message || e).slice(0, 120) };
   }
@@ -919,14 +1050,15 @@ server.tool(
 
 // ---------------- 资源 ----------------
 
-server.resource("hnpf://state", "玩家当前状态快照", async () => {
+// SDK 签名：resource(name, uri, config?, readCallback) —— 第二个参数必须是 URI
+server.resource("state", "hnpf://state", { mimeType: "application/json" }, async (uri) => {
   const r = await call("state.get");
-  return { contents: [{ uri: "hnpf://state", text: JSON.stringify(r, null, 2) }] };
+  return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(r, null, 2) }] };
 });
 
-server.resource("hnpf://network", "全网络快照", async () => {
+server.resource("network", "hnpf://network", { mimeType: "application/json" }, async (uri) => {
   const r = await call("network.map");
-  return { contents: [{ uri: "hnpf://network", text: JSON.stringify(r, null, 2) }] };
+  return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(r, null, 2) }] };
 });
 
 // ---------------- 提示（Prompts） ----------------

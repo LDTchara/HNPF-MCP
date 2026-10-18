@@ -138,7 +138,8 @@ public static partial class Executor
         var regId = id.Substring(id.IndexOf(':') + 1);
         try
         {
-            var meth = d.GetType().GetMethod("acceptMission", PrivFlags);
+            // ⚠️ 必须带 BindingFlags.Instance：只给 Public|NonPublic 时 GetMethod 返回 null
+            var meth = d.GetType().GetMethod("acceptMission", PrivFlags | BindingFlags.Instance);
             if (prefix == "contract")
             {
                 if (GetFieldOrProp(d, "listingMissions") is IDictionary lm && lm[regId] != null)
@@ -161,6 +162,55 @@ public static partial class Executor
         }
         catch (ArgumentException) { throw; }
         catch (Exception ex) { throw new ArgumentException($"accept failed: {ex.Message}"); }
+    }
+
+    // ---- 防火墙分析 / 解题（结构化；对位 vanilla analyze/solve）--------
+
+    /// <summary>对目标机执行一次 analyze（等价 vanilla analyze），返回防火墙进度。</summary>
+    private static object FirewallAnalyze(OS os, string ip)
+    {
+        var comp = MessagingTargetComp(os, ip);
+        if (comp == null) throw new ArgumentException("target computer not found: " + ip);
+        var fw = comp.firewall;
+        if (fw == null)
+            return new Dictionary<string, object>
+            { ["ok"] = true, ["analyzed"] = false, ["reason"] = "no firewall on target", ["ip"] = comp.ip };
+        fw.writeAnalyzePass(os, comp);
+        comp.hostileActionTaken();
+        return FirewallDetail(comp);
+    }
+
+    /// <summary>对目标机尝试一次 solve（等价 vanilla solve），返回是否解开。</summary>
+    private static object FirewallSolve(OS os, string ip, string solution)
+    {
+        if (string.IsNullOrEmpty(solution)) throw new ArgumentException("solution is required");
+        var comp = MessagingTargetComp(os, ip);
+        if (comp == null) throw new ArgumentException("target computer not found: " + ip);
+        var fw = comp.firewall;
+        if (fw == null)
+            return new Dictionary<string, object>
+            { ["ok"] = true, ["solved"] = false, ["reason"] = "no firewall on target", ["ip"] = comp.ip };
+        bool ok = fw.attemptSolve(solution, os);
+        return new Dictionary<string, object>
+        {
+            ["ok"] = true, ["solved"] = fw.solved, ["attempted"] = ok, ["ip"] = comp.ip,
+        };
+    }
+
+    /// <summary>防火墙详情（读 private 字段，容忍版本差异）。</summary>
+    private static object FirewallDetail(Computer comp)
+    {
+        var fw = comp?.firewall;
+        if (fw == null) return null;
+        return new Dictionary<string, object>
+        {
+            ["ip"] = comp.ip,
+            ["solved"] = fw.solved,
+            ["solutionLength"] = ReadMember(fw, "solutionLength"),
+            ["analysisPasses"] = ReadMember(fw, "analysisPasses"),
+            ["additionalDelay"] = ReadMember(fw, "additionalDelay"),
+            ["complexity"] = ReadMember(fw, "complexity"),
+        };
     }
 
     // ---- G3 shell.drive / terminal.type ----

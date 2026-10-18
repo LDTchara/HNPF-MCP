@@ -158,10 +158,20 @@ public static class McpModuleScanner
             throw new ArgumentException($"McpTool not found: {tool ?? "(null)"} (use modtool.list to see available tools)");
 
         object result;
-        if (method.GetParameters().Length == 0)
-            result = method.Invoke(null, null);
-        else
-            result = method.Invoke(null, new object[] { p ?? new Dictionary<string, object>() });
+        try
+        {
+            if (method.GetParameters().Length == 0)
+                result = method.Invoke(null, null);
+            else
+                result = method.Invoke(null, new object[] { p ?? new Dictionary<string, object>() });
+        }
+        catch (System.Reflection.TargetInvocationException tie) when (tie.InnerException != null)
+        {
+            // 反射调用会把内层异常包成 TargetInvocationException，直接透传内层信息，
+            // 否则 server 只能看到 "Exception has been thrown by the target of an invocation."
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
+            throw; // 不可达，满足编译器
+        }
 
         // string 直接返回；object 走序列化；null → ok
         if (result is string s) return new Dictionary<string, object> { ["ok"] = true, ["tool"] = tool, ["result"] = s };

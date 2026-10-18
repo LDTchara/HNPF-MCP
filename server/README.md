@@ -3,24 +3,26 @@
 让 AI（任何 MCP 宿主：Claude Desktop / WorkBuddy / Cursor 等）**查询与控制 Hacknet + Pathfinder 游戏运行态**。
 
 ```
-AI 宿主 ──stdio──► server (Node/TS, MCP SDK)
-                        │ NamedPipe \\.\pipe\bridge
+AI 宿主 ──stdio──► server (Node.js, MCP SDK)
+                        │ NamedPipe \\.\pipe\hnpf-mcp-bridge
                         ▼
 Hacknet 游戏进程 ── bridge (C# BepInEx 插件)
    ├─ 主线程泵（OSUpdateEvent 消费请求，杜绝竞态）
-   ├─ 16 个 JSON-RPC 方法（状态查询 / 命令执行 / 文件操作 / Flag）
-   └─ 事件推送（node.connected / game.loaded / game.saved）
+   ├─ 51 个分发方法（状态/文件/命令/端口/任务/模组/daemon/主菜单…）+ auth 握手
+   └─ 事件推送（node.connected/disconnected、game.loaded/saved 等）
 ```
 
 ## 目录结构
 
 ```
 bridge/   C# BepInEx 插件（游戏进程内）
-  └─ src/          HnpfMcpBridgePlugin.cs（入口）、PipeServer.cs（NamedPipe）、
-                   Executor.cs（主线程执行器+DTO 投影）、JsonRpc.cs（消息模型）
+  └─ *.cs           HnpfMcpBridgePlugin.cs（入口）、PipeServer.cs（NamedPipe）、
+                   Executor*.cs（主线程执行器+DTO 投影，按域拆分）、MenuExecutor.cs、
+                   McpModuleScanner.cs、JsonRpc.cs（消息模型）
 server/   Node.js MCP 服务器（独立进程）
   └─ src/          index.js（MCP 工具/资源注册）、bridge.js（NamedPipe 客户端）
-  └─ test/         smoke.mjs（协议冒烟）、fake-bridge.mjs + e2e.mjs（端到端链路）
+  └─ test/         smoke.mjs（协议冒烟）、e2e.mjs + fake-bridge.mjs（端到端）、
+                   auth-check.mjs（token 握手）、real-all.mjs / real-verify.mjs（真机）
 ```
 
 ## 一、编译并安装 bridge（游戏侧）
@@ -36,28 +38,35 @@ dotnet build bridge/HnpfMcpBridge.csproj -c Release
 
 ### L3 连接器（可选，KE 等模组专属状态）
 
-想暴露某模组的独有内存态（如 KE 的 PhaseSwift/CustomTrial/VM），**不需要改模组本体**，做一个硬依赖该模组的独立连接器插件即可（示例见 `../connector/`，已含 KE 适配器：`ke.phaseswift.state` / `ke.customtrial.state` / `ke.vm.state` / `ke.config.get` / `ke.flag.find`）：
+想暴露某模组的独有内存态（如 KE 的 PhaseSwift/CustomTrial/VM/PortHackV2/ProxyKiller），**不需要改模组本体**，做一个连接器插件即可（实现见 `../connector/`，现含 **11 个 `ke.*`**）：
 
 ```bash
-dotnet build ../connector/KeMcpConnector.csproj -c Release
-# 产物：../connector/bin/Release/net472/KeMcpConnector.dll → 复制到 BepInEx/plugins/
+dotnet build ../connector/HnpfMcpConnector.csproj -c Release
+# 产物：../connector/bin/Release/net472/HnpfMcpConnector.dll → 复制到扩展的 Plugins/（推荐）或 BepInEx/plugins/
 ```
 
-原理：连接器用 `[BepInDependency]` 声明依赖 KE 与 bridge（BepInEx 保证先加载）；`[McpTool]` 静态方法由 bridge 在 OSLoaded 时反射发现，**无需任何注册代码**。新模组照此模式加一个连接器即可，MCP 侧工具自动出现。
+原理：连接器**不声明任何 `[BepInDependency]`**（bridge 是全局插件，扩展模式依赖校验看不到它，声明会误报 missing dependencies）——全部走运行时反射访问模组类型；`[McpTool]` 静态方法由 bridge 在 OSLoaded / 进扩展时反射发现，**无需注册代码**。新模组照此模式加一组 `[McpTool]` 方法即可，MCP 侧用 `modtool_list`/`modtool_call` 调用。
 
 配置（首次启动生成 `BepInEx/config/com.HnpfMcp.Bridge.cfg`）：
 
 ```ini
 [Pipe]
-# 多开游戏时改为 bridge-{pid}
-Name = bridge
-# 握手 token，留空则不鉴权（仅本机进程可连管道）
+# 管道名（默认 hnpf-mcp-bridge；多开被占用时自动改为 {Name}-{pid}）
+Name = hnpf-mcp-bridge
+# 握手 token，留空则不鉴权
 Token =
+# Token 为空时是否自动生成随机 token（false=保持空值不鉴权）
+AutoToken = true
 
 [Safety]
-# 只读模式：拒绝所有写操作
+# 只读模式：拒绝所有写方法（fs.write/flags.set/port.*/execute_command/run_action/menu.* 等）
 ReadOnly = false
+# 命令白名单/黑名单（逗号分隔；仅约束 execute_command / launch_exe / 游戏内 mcp exec）
+AllowedCommands =
+BlockedCommands =
 ```
+
+> 注：管道未设置 ACL，`Token` 是本机进程间的唯一鉴权手段；`ReadOnly` 由 bridge 在方法分发入口统一拦截（cfg 热加载生效）。
 
 游戏内验证：终端输入 `mcp ping`，应输出 bridge 版本与管道名。
 
@@ -69,13 +78,14 @@ npm install
 # 直接跑（stdio，供 MCP 宿主拉起）：
 node src/index.js
 # 测试：
-node test/smoke.mjs        # 协议冒烟（游戏可不运行）
-node test/e2e.mjs          # 端到端（自动起假 bridge 模拟游戏侧）
+node test/smoke.mjs        # 协议冒烟（游戏可不运行；断言 isError + resources URI）
+node test/e2e.mjs          # 端到端（自动起假 bridge，覆盖全部工具含新增进程/daemon/文件/防火墙）
+node test/auth-check.mjs   # token 握手（fake bridge 返回 authenticated）
 ```
 
-环境变量：`HNPF_PIPE`（管道名，默认 `\\.\pipe\bridge`）、`HNPF_TOKEN`（与 bridge cfg 一致）。
+环境变量：`HNPF_PIPE`（管道完整路径，默认 `\\.\pipe\hnpf-mcp-bridge`）、`HNPF_TOKEN`（与 bridge cfg `[Pipe] Token` 一致）、`HNPF_GAME`（游戏路径）、`HNPF_AUDIT=off`（关审计）、`HNPF_LOG`（game_log_tail 默认日志路径）。
 
-MCP 宿主配置示例（Claude Desktop `claude_desktop_config.json` / WorkBuddy `~/.workbuddy/mcp.json`，详见 `HNPF-MCP使用指南.md` §1.1）：
+MCP 宿主配置示例（详见 `../docs/使用指南.md` §1.1）：
 
 ```json
 {
@@ -83,33 +93,33 @@ MCP 宿主配置示例（Claude Desktop `claude_desktop_config.json` / WorkBuddy
     "hnpf": {
       "command": "C:\\...\\node.exe",
       "args": ["C:\\...\\server\\src\\index.js"],
-      "env": { "HNPF_PIPE": "\\\\.\\pipe\\bridge" }
+      "env": { "HNPF_PIPE": "\\\\.\\pipe\\hnpf-mcp-bridge" }
     }
   }
 }
 ```
 
-## 三、工具清单（45 个）
+## 三、工具清单（56 个）
 
 | 分类 | 工具 |
 |---|---|
-| 状态 | `ping` `get_state` `get_network_map` `get_computer(ip?)` `get_flags` `get_mission` `mission_detail` |
-| 文件 | `list_files(ip?,path?)` `read_file(ip?,path?,file)` `write_file` `append_file` |
-| 命令 | `execute_command(cmd)` `connect(ip)` `disconnect` `terminal_history(lines?)` |
-| 端口/提权 | `open_port(ip?,port)` `close_port(ip?,port)` `take_admin(ip?)` |
-| 动作/exe | `run_action(xml)`（泛化执行 Pathfinder/KE 动作）`launch_exe(exeName,args?)` |
+| 状态 | `ping` `get_state` `get_network_map(summary?)` `get_computer(ip?)` `get_flags` `get_mission` `mission_detail` |
+| 文件 | `list_files(ip?,path?)` `read_file(ip?,path?,file)` `write_file` `append_file` `delete_file` `move_file` `replace_in_file` `transfer_file` |
+| 命令 | `execute_command(cmd,waitMs?)` `connect(ip)` `disconnect` `terminal_history(lines?)` |
+| 端口/提权/防火墙 | `open_port` `close_port` `take_admin` `firewall_crack`（调试直破）`analyze_firewall` `solve_firewall` |
+| 动作/exe | `run_action(xml)`（Pathfinder/KE 动作泛化）`launch_exe(exeName,args?)` `run_hack_script(script)` |
 | Flag | `set_flag(name)` `clear_flag(name)` |
-| 存档 | `save_game`（自动快照到 HNPF-MCP/snapshots/） |
-| 事件/发现 | `get_events(since?)`（增量事件）`registry`（自动列出模组注册的命令/动作/exe/daemon） |
-| 邮件/IRC/论坛 | `mail_list(ip?)` `mail_read(ip?,user?,folder?,subject?)` `irc_read(ip?)` `board_read(ip?)` |
-| 任务/情报（G 节） | `submit_mission(details,sender?)` `hub_list(ip?)` `hub_accept(id,ip?)` `os_memory(ip?)` |
-| 交互（G 节） | `shell_drive(action?)`（shell overload/cancel/exit）`terminal_type(text)`（模拟输入不回车） |
-| 批量/生命周期 | `run_batch(steps,continueOnError?)`（批量串行）`exit_to_menu`（游戏内回主菜单切账号）`pipe_probe(candidates?)` |
-| 模组专属 | `modtool_list` `modtool_call`（调用模组 `[McpTool]` 工具，见 examples/KeMcpAdapter.cs） |
-| 游戏启动/主菜单 | `launch_game(ext?,username?,console?,debug?,dryRun?)`（正常启动；`ext` 后台自动经主菜单进扩展，`-extstart` 已弃用；`console` 带控制台；默认带 `-enabledebug -enablefc`）`menu_enter_extension(username?,pass?)`（主菜单新建账号进扩展）`menu_load_extension_save(userFile,username,ext?)`（主菜单恢复存档进扩展） |
-| 多开 | `pipe_probe(candidates?)`（探测在线 bridge 管道）；`launch_game` 含进程检测防多开 |
+| 进程/daemon | `get_processes`（os.exes：PID/类型/ramCost/位置）`kill_exe(pid)` `get_daemons(ip?)`（原版 daemon 通用投影） |
+| 存档/事件 | `save_game`（自动快照）`save_list` `get_events(since?)` `registry` |
+| 邮件/IRC/论坛 | `mail_list(ip?)` `mail_read(ip?,user,folder?,subject)` `irc_read(ip?)` `board_read(ip?)` |
+| 任务/情报 | `submit_mission(details,sender?)` `hub_list(ip?)` `hub_accept(id,ip?)` `os_memory(ip?)` |
+| 交互 | `shell_drive(action?)` `terminal_type(text)` |
+| 批量/生命周期 | `run_batch(steps,continueOnError?)`（28 个动作类工具映射）`exit_to_menu` `pipe_probe(candidates?)` |
+| 模组专属 | `modtool_list` `modtool_call(tool,params?)`（连接器注册的 `ke.*` 等） |
+| 游戏启动/主菜单 | `launch_game(ext?,username?,console?,debug?,dryRun?)` `menu_enter_extension(username?,pass?,ext?)` `menu_load_extension_save(userFile,username,ext?)` |
+| 日志 | `game_log_tail(lines?,filter?,offset?,path?)`（读本机 BepInEx LogOutput.log） |
 
-注：`ip` 参数省略时作用于当前连接节点。
+注：`ip` 参数省略时：`computer/fs/port.*` 作用于**当前连接节点**；`mail/irc/board/hub/os.memory/firewall.*/daemon.list` 为**当前连接 → 本机**回退。
 
 ## 三·五、提示（Prompts，4 个）
 
@@ -118,15 +128,15 @@ MCP 宿主配置示例（Claude Desktop `claude_desktop_config.json` / WorkBuddy
 - `mission-debug` — 任务调试（目标条件/Flag/动作驱动）
 - `hn-command-guide` — **HN 终端指令速查**（scp 方向相反/exe 是列表/analyze→solve 等差异，执行命令前拉取；详见 docs/HN命令速查.md）
 
-资源：`hnpf://state`、`hnpf://network`。事件（bridge→server）：`node.connected/disconnected`、`game.loaded`、`game.saved`（当前输出到 stderr 日志，订阅工具在 P2 提供）。
+资源：`hnpf://state`、`hnpf://network`（MCP 客户端可直接 read；`listResources` 返回正确 URI）。事件（bridge→server）：`node.connected/disconnected`、`game.loaded`、`game.saved` 实时推 stderr；`mission.changed`、`command.executed` 进事件缓冲，用 `get_events` 增量拉取。
 
 ## 四、设计要点
 
 - **线程安全**：所有游戏对象访问都在 `OSUpdateEvent`（主线程）回调内执行；请求经 `ConcurrentQueue` 入队，每帧最多消费 8 个防掉帧。
 - **序列化**：游戏对象循环引用多，全部手写 DTO 投影（见 `Executor.cs`），绝不对游戏对象直接 `JSON.stringify`。
 - **成员兼容**：对 `RamModule` 等有版本差异的成员用反射访问，编译期不绑定成员名。
-- **只读模式**：`ReadOnly=true` 时拒绝 `execute_command/connect/fs.write/flags.set` 等写操作。
-- **扩展**：模组可通过 `[McpTool]` 特性注册专属工具（反射自动装配，P3 规划）。
+- **只读模式**：`ReadOnly=true` 时在方法分发入口拒绝全部写方法（`fs.write/append/delete/move/replace`、`flags.*`、`port.*`、`admin.take`、`game.execute_command/connect/disconnect/run_action/run_hack_script/launch_exe/save/exit_to_menu`、`mission.submit`、`hub.accept`、`shell.drive`、`terminal.type`、`process.kill`、`firewall.*`、`menu.*`）；读方法不受影响。命令白/黑名单只约束 `execute_command`/`launch_exe`/游戏内 `mcp exec`。
+- **扩展**：模组/连接器通过 `[McpTool]` 特性注册专属工具（反射自动装配，已实现；KE 连接器 11 个 `ke.*`）。
 
 ## 五、已知坑
 

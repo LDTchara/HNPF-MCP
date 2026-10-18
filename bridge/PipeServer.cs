@@ -67,6 +67,7 @@ public class PipeServer : IDisposable
 
                 HnpfMcpBridgePlugin.LogInfo($"Pipe listening: \\\\.\\pipe\\{_pipeName}");
                 await _pipe.WaitForConnectionAsync(_cts.Token);
+                _authenticated = false;   // 每条新连接都重新握手（多客户端重连）
 
                 using var reader = new StreamReader(_pipe, Encoding.UTF8);
                 string line;
@@ -77,7 +78,8 @@ public class PipeServer : IDisposable
                     {
                         var req = TryParse(line);
                         if (req == null) continue;             // 无效消息，忽略
-                        if (!Authenticate(req)) return;        // token 不符，断开
+                        if (!Authenticate(req)) break;         // token 不符：已回 401，断开本条连接但继续监听
+                        if (req.Method == "auth") continue;    // 握手请求不回主线程（否则会报 unknown method）
                         _inbox.Enqueue(req);
                     }
                     catch (Exception e)
@@ -146,12 +148,28 @@ public class PipeServer : IDisposable
         return req;
     }
 
-    /// <summary>握手：配置了 token 时，首个请求必须携带正确 token。</summary>
+    private bool _authenticated;
+
+    /// <summary>
+    /// 握手：配置了 token 时，**连接上的首个请求**必须是正确的 auth；通过后该连接后续请求不再校验。
+    /// 失败回 401 并由调用方断开本条连接（不退出监听循环）。
+    /// </summary>
     private bool Authenticate(RpcRequest req)
     {
         if (string.IsNullOrEmpty(_token)) return true;
-        if (req.Method == "auth" && req.Params.TryGetValue("token", out var t) && t?.ToString() == _token)
+        if (_authenticated) return true;
+        if (req.Method == "auth"
+            && req.Params.TryGetValue("token", out var t)
+            && t?.ToString() == _token)
+        {
+            _authenticated = true;
+            PushResponse(JsonRpc.Serialize(new Dictionary<string, object>
+            {
+                ["id"] = req.Id ?? 0,
+                ["result"] = new Dictionary<string, object> { ["ok"] = true, ["authenticated"] = true }
+            }));
             return true;
+        }
         PushResponse(JsonRpc.Serialize(new Dictionary<string, object>
         {
             ["id"] = req.Id ?? 0,

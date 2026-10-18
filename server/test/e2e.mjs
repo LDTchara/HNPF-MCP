@@ -114,6 +114,32 @@ try {
   const om = await client.callTool({ name: "os_memory", arguments: {} });
   console.log(`[e2e] os_memory fragments: ${JSON.stringify(JSON.parse(om.content[0].text).memory.fileFragments)}`);
 
+  const pr = await client.callTool({ name: "get_processes", arguments: {} });
+  const prj = JSON.parse(pr.content[0].text);
+  console.log(`[e2e] get_processes: ${prj.count} 进程, RAM ${prj.ramFree}/${prj.ramTotal}`);
+  const dk = await client.callTool({ name: "kill_exe", arguments: { pid: 2 } });
+  console.log(`[e2e] kill_exe: ok=${JSON.parse(dk.content[0].text).ok}`);
+  const da = await client.callTool({ name: "get_daemons", arguments: {} });
+  const daj = JSON.parse(da.content[0].text);
+  console.log(`[e2e] get_daemons: ${daj.count} 个 [${daj.daemons.map((d) => d.type).join(", ")}]`);
+  const fa = await client.callTool({ name: "analyze_firewall", arguments: {} });
+  console.log(`[e2e] analyze_firewall: passes=${JSON.parse(fa.content[0].text).analysisPasses}`);
+  const fsv = await client.callTool({ name: "solve_firewall", arguments: { solution: "000000" } });
+  console.log(`[e2e] solve_firewall: solved=${JSON.parse(fsv.content[0].text).solved}`);
+  const df = await client.callTool({ name: "delete_file", arguments: { file: "x.txt" } });
+  console.log(`[e2e] delete_file: ${JSON.parse(df.content[0].text).deleted}`);
+  const mf = await client.callTool({ name: "move_file", arguments: { file: "a.txt", toFile: "b.txt" } });
+  console.log(`[e2e] move_file: ${JSON.parse(mf.content[0].text).file}`);
+  const rf = await client.callTool({ name: "replace_in_file", arguments: { file: "a.txt", target: "x", replacement: "y" } });
+  console.log(`[e2e] replace_in_file: ${JSON.parse(rf.content[0].text).occurrences} 处`);
+  const tf = await client.callTool({ name: "transfer_file", arguments: { file: "passwd", toPath: "/home" } });
+  console.log(`[e2e] transfer_file: ${JSON.parse(tf.content[0].text).ok}`);
+
+  // resources 实际可读（之前注册参数错位导致不可读）
+  const rr = await client.readResource({ uri: "hnpf://state" });
+  const rrj = JSON.parse(rr.contents[0].text);
+  console.log(`[e2e] readResource hnpf://state: connectedIP=${rrj.connectedIP}`);
+
   console.log("[e2e] 全部通过 ✔");
 } finally {
   await client.close();
