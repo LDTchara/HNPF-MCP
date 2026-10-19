@@ -9,6 +9,7 @@
 - **`menu_enter_extension` / `menu_load_extension_save` 增加进入校验**：bridge RPC 返回 ok 后再等 2.5s 读 `state.get`，回传 `entered/verified/thisComputerIP`，抓住"同名账号 AddUser false → 游戏报错但 bridge 仍 ok"的假阳性。
 - **修复 `game_log_tail`**：回调参数 `path` 遮蔽模块 `path`，`path.join` 抛 `Cannot read properties of undefined (reading 'join')`；改用 `pathMod.join`。
 - **修复 `terminal_history`**：原版 `GetRecentTerminalHistoryList()` 返回 history 的**最旧 30 行**（`for i<30`），之前看不到最新输出；改为运行时类型反射读 `Terminal.history` 完整列表取末尾 N 行，失败时用 `GetRecentTerminalHistoryString()`（最后 30 行，需反转为时间顺序）兜底。
+- **connector 新增 `ke.color.parse`**：运行时反射 `ColorHelper.ParseStaticColor` / `CustomColorManager.ParseColorString`，直接返回颜色字符串解析结果（静态/动态/是否识别），便于无画面验证颜色格式；`ke.*` 工具数 13 → 14。
 - 工具总数 63 → 64。
 
 ## 0.2.0（2026-10-19）

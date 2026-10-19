@@ -714,6 +714,51 @@ public static class HnpfMcpAdapters
         };
     }
 
+    [McpTool("ke.color.parse", "解析颜色字符串（XNA 命名色 / #RGB / #RRGGBB / #AARRGGBB / R,G,B[,A] / 动态色 LDTchara/RGB/Gradient/预设名）；返回解析结果，不依赖画面")]
+    public static object ColorParse(Dictionary<string, object> p)
+    {
+        var raw = p.TryGetValue("value", out var v) ? v?.ToString() : null;
+        var colorHelper = KeReflect.FindType("ColorHelper");
+        if (colorHelper == null) return KeReflect.ModMissing("ColorHelper");
+
+        var result = new Dictionary<string, object> { ["raw"] = raw };
+        try
+        {
+            var m = colorHelper.GetMethod("ParseStaticColor",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            if (m == null)
+            {
+                result["error"] = "ColorHelper.ParseStaticColor not found";
+                return result;
+            }
+
+            var colorType = m.GetParameters()[1].ParameterType;
+            // 哨兵 alpha=0：ParseStaticColor 所有合法路径都会把 alpha 置 255，用它判断"没认出来"
+            var sentinel = Activator.CreateInstance(colorType, (byte)0, (byte)0, (byte)0, (byte)0);
+            var parsed = m.Invoke(null, new object[] { raw, sentinel });
+            result["static"] = parsed?.ToString();
+            result["recognized"] = parsed != null && !parsed.Equals(sentinel);
+
+            var customColorManager = KeReflect.FindType("CustomColorManager");
+            var dyn = customColorManager == null
+                ? null
+                : KeReflect.CallStaticArgs(customColorManager, "ParseColorString", new object[] { raw });
+            result["isDynamic"] = dyn != null;
+            if (dyn != null)
+            {
+                result["dynamicType"] = KeReflect.Get(dyn, "ColorType")?.ToString();
+                result["speed"] = KeReflect.Get(dyn, "Speed");
+                result["alpha"] = KeReflect.Get(dyn, "Alpha");
+                result["segments"] = KeReflect.ToList(KeReflect.Get(dyn, "Segments")).Count;
+            }
+        }
+        catch (Exception e)
+        {
+            result["error"] = e.InnerException?.Message ?? e.Message;
+        }
+        return result;
+    }
+
     [McpTool("ke.color.state", "动态颜色状态：已注册的动态颜色字段与各自当前颜色值 + ChangeThemeColor 临时主题覆盖")]
     public static object ColorState(Dictionary<string, object> p)
     {

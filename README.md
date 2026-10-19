@@ -75,7 +75,7 @@ execute_command { cmd: "help" }                    # 终端执行命令
 | 进程/daemon | `get_processes` `kill_exe` `get_daemons` |
 | 原版小操作 | `reboot_computer` `set_cd_tray` `clear_terminal` `add_note` `scan_network` `probe_target` `get_achievements` |
 | 批量/生命周期 | `run_batch`（34 个动作类工具批量）`save_game`（自动快照）`exit_to_menu` `pipe_probe` |
-| 模组专属 | `modtool_list` `modtool_call` + 连接器自动注册（如 KE 的 `ke.*` **13 个**） |
+| 模组专属 | `modtool_list` `modtool_call` + 连接器自动注册（如 KE 的 `ke.*` **14 个**） |
 | 游戏启动/主菜单 | `launch_game`（自动进扩展，可 `waitForExtension` 等待回传）`launch_status` `menu_enter_extension` `menu_load_extension_save`（均回传 `entered/verified`） |
 
 ## 测试
@@ -97,7 +97,7 @@ node test/real-verify.mjs  # 真机验证新增能力（RAM/进程/文件/防火
 HNPF-MCP/
 ├── bridge/         L1 BepInEx 全局插件（PipeServer/Executor/MenuExecutor/Events/...）
 ├── server/         Node.js MCP Server（64 工具 + Prompts + Resources）
-├── connector/      L3 模组连接器实际插件（无 BepInDependency 反射软依赖，[McpTool] 发现，13 个 ke.*）
+├── connector/      L3 模组连接器实际插件（无 BepInDependency 反射软依赖，[McpTool] 发现，14 个 ke.*）
 ├── docs/           使用文档（使用指南 / HN命令速查）
 ├── deploy.ps1      一键部署脚本
 └── snapshots/      存档快照（save_game 自动生成，保留 20 份）
