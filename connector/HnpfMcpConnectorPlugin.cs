@@ -714,6 +714,30 @@ public static class HnpfMcpAdapters
         };
     }
 
+    [McpTool("ke.theme.colors", "读取当前 OS 的主题颜色字段（CustomTheme 的全部 Color 字段对应的 OS 字段），用于验证 ChangeThemeColor/主题切换")]
+    public static object ThemeColors(Dictionary<string, object> p)
+    {
+        var os = Hacknet.OS.currentInstance;
+        if (os == null) return new Dictionary<string, object> { ["error"] = "no active OS" };
+        var themeType = typeof(Hacknet.OS).Assembly.GetType("Hacknet.CustomTheme");
+        if (themeType == null) return KeReflect.ModMissing("CustomTheme");
+
+        var osType = os.GetType();
+        var fields = new Dictionary<string, object>();
+        try
+        {
+            foreach (var f in themeType.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+            {
+                if (f.FieldType.Name != "Color") continue;
+                var of = osType.GetField(f.Name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (of == null) continue;
+                fields[f.Name] = of.GetValue(os)?.ToString();
+            }
+        }
+        catch (Exception e) { return new Dictionary<string, object> { ["error"] = e.Message }; }
+        return new Dictionary<string, object> { ["fields"] = fields, ["count"] = fields.Count };
+    }
+
     [McpTool("ke.color.parse", "解析颜色字符串（XNA 命名色 / #RGB / #RRGGBB / #AARRGGBB / R,G,B[,A] / 动态色 LDTchara/RGB/Gradient/预设名）；返回解析结果，不依赖画面")]
     public static object ColorParse(Dictionary<string, object> p)
     {

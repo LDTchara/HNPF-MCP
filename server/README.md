@@ -38,7 +38,7 @@ dotnet build bridge/HnpfMcpBridge.csproj -c Release
 
 ### L3 连接器（可选，KE 等模组专属状态）
 
-想暴露某模组的独有内存态（如 KE 的 PhaseSwift/CustomTrial/VM/PortHackV2/ProxyKiller），**不需要改模组本体**，做一个连接器插件即可（实现见 `../connector/`，现含 **14 个 `ke.*`**）：
+想暴露某模组的独有内存态（如 KE 的 PhaseSwift/CustomTrial/VM/PortHackV2/ProxyKiller），**不需要改模组本体**，做一个连接器插件即可（实现见 `../connector/`，现含 **15 个 `ke.*`**）：
 
 ```bash
 dotnet build ../connector/HnpfMcpConnector.csproj -c Release
@@ -118,7 +118,7 @@ MCP 宿主配置示例（详见 `../docs/使用指南.md` §1.1）：
 | 交互 | `shell_drive(action?)` `terminal_type(text)` |
 | 原版小操作 | `reboot_computer(instant?)` `set_cd_tray(open)` `clear_terminal` `add_note(text)` `scan_network` `probe_target` `get_achievements` |
 | 批量/生命周期 | `run_batch(steps,continueOnError?)`（34 个动作类工具映射，waitMs/快照/退出等待与单工具一致）`exit_to_menu` `pipe_probe(candidates?)` |
-| 模组专属 | `modtool_list` `modtool_call(tool,params?)`（连接器注册的 14 个 `ke.*` 等） |
+| 模组专属 | `modtool_list` `modtool_call(tool,params?)`（连接器注册的 15 个 `ke.*` 等） |
 | 游戏启动/主菜单 | `launch_game(ext?,username?,console?,debug?,dryRun?,waitForExtension?,waitTimeoutMs?)` `launch_status` `menu_enter_extension(username?,pass?,ext?)` `menu_load_extension_save(userFile,username,ext?)`（menu_* 均回传 entered/verified/thisComputerIP） |
 | 日志 | `game_log_tail(lines?,filter?,offset?,path?)`（读本机 BepInEx LogOutput.log） |
 
@@ -139,7 +139,7 @@ MCP 宿主配置示例（详见 `../docs/使用指南.md` §1.1）：
 - **序列化**：游戏对象循环引用多，全部手写 DTO 投影（见 `Executor.cs`），绝不对游戏对象直接 `JSON.stringify`。
 - **成员兼容**：对 `RamModule` 等有版本差异的成员用反射访问，编译期不绑定成员名。
 - **只读模式**：`ReadOnly=true` 时在方法分发入口拒绝全部写方法（`fs.write/append/delete/move/replace`、`flags.*`、`port.*`、`admin.take`、`game.execute_command/connect/disconnect/run_action/run_hack_script/launch_exe/save/exit_to_menu`、`mission.submit`、`hub.accept`、`shell.drive`、`terminal.type`、`process.kill`、`game.reboot`、`game.cd_tray`、`game.add_note`、`firewall.*`、`menu.*`）；读方法不受影响。命令白/黑名单只约束 `execute_command`/`launch_exe`/游戏内 `mcp exec`。
-- **扩展**：模组/连接器通过 `[McpTool]` 特性注册专属工具（反射自动装配，已实现；KE 连接器 14 个 `ke.*`）。
+- **扩展**：模组/连接器通过 `[McpTool]` 特性注册专属工具（反射自动装配，已实现；KE 连接器 15 个 `ke.*`）。
 
 ## 五、已知坑
 
