@@ -1156,6 +1156,7 @@ function scheduleAutoEnterExtension(ext, { username, pass, gamePid } = {}) {
           if (v.entered) {
             task.phase = "entered";
             task.thisComputerIP = v.thisComputerIP;
+            task.lastError = null;   // 首次探测的"管道未就绪"错误不应带到成功结果里
             const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
             process.stderr.write(`[hnpf] 已自动进扩展 ${ext}（主菜单路径，验证通过，耗时 ${secs}s / ${task.probes} 次探测）\n`);
           } else {
