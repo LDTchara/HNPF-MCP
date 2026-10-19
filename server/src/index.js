@@ -1200,6 +1200,8 @@ server.tool(
     console: z.boolean().optional().describe("默认 true 带控制台启动（Start-Process，CEF 不冒空窗口、控制台显示游戏日志；false=直接 spawn 降级，有 CEF 空窗副作用）"),
     debug: z.boolean().optional().describe("默认 true 带 -enabledebug -enablefc（游戏调试模式）；false 则不带"),
     dryRun: z.boolean().optional().describe("true=只返回命令不实际启动"),
+    waitForExtension: z.boolean().optional().describe("等待回传：true=等后台自动进扩展有结果后再返回（entered/phase/waitedMs 等）；默认 false=立即返回，用 launch_status 查询"),
+    waitTimeoutMs: z.number().int().min(1000).max(60000).optional().describe("waitForExtension=true 时最长等待毫秒（默认 30000，上限 60000）；超时返回 phase=timeout，后台任务继续"),
   },
   async ({ ext, username, console, debug, dryRun, waitForExtension, waitTimeoutMs }) => {
     // 防多开：进程检测（tasklist），游戏已在跑则拒绝
