@@ -252,10 +252,34 @@ public static partial class Executor
         if (os?.terminal == null) return null;
         try
         {
-            var field = typeof(OS).Assembly.GetType("Hacknet.Terminal")
-                ?.GetField("history", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-            if (field?.GetValue(os.terminal) is List<string> history)
-                return history;
+            // 用运行时类型找（Terminal 是 internal，且可能经 Pathfinder 合并/派生；Assembly.GetType 不可靠）
+            var type = os.terminal.GetType();
+            while (type != null)
+            {
+                var field = type.GetField("history",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                if (field?.GetValue(os.terminal) is List<string> history)
+                    return history;
+                type = type.BaseType;
+            }
+        }
+        catch { }
+        // 兜底：public GetRecentTerminalHistoryString() 返回的是**最后** 30 行（与 List 版相反），
+        // 虽拿不到完整条数，但至少能看最新输出（含防刷屏提示行）。
+        try
+        {
+            var text = os.terminal.GetRecentTerminalHistoryString();
+            if (!string.IsNullOrEmpty(text))
+            {
+                var parts = text.Replace("\r\n", "\n").Split('\n');
+                var list = new List<string>();
+                foreach (var part in parts)
+                    if (!string.IsNullOrEmpty(part))
+                        list.Add(part);
+                // GetRecentTerminalHistoryString 是"新→旧"拼接的，反转回时间顺序
+                if (list.Count > 0) list.Reverse();
+                return list;
+            }
         }
         catch { }
         try { return os.terminal.GetRecentTerminalHistoryList(); }
