@@ -82,6 +82,7 @@ node test/smoke.mjs        # 协议冒烟（游戏可不运行；断言 isError 
 node test/e2e.mjs          # 端到端（自动起假 bridge，覆盖全部工具含新增进程/daemon/文件/防火墙）
 node test/auth-check.mjs   # token 握手（fake bridge 返回 authenticated）
 node test/multiclient-check.mjs  # 多客户端并发（真机，需游戏运行）
+node test/token-real-check.mjs   # 真实 token 鉴权（真机，需游戏主菜单 + cfg 设置 Token）
 ```
 
 环境变量：`HNPF_PIPE`（管道完整路径，默认 `\\.\pipe\hnpf-mcp-bridge`）、`HNPF_TOKEN`（与 bridge cfg `[Pipe] Token` 一致）、`HNPF_GAME`（游戏路径）、`HNPF_AUDIT=off`（关审计）、`HNPF_LOG`（game_log_tail 默认日志路径）。

@@ -14,7 +14,8 @@
     "test:auth": "node test/auth-check.mjs",
     "test:real-all": "node test/real-all.mjs",
     "test:real-verify": "node test/real-verify.mjs",
-    "test:multiclient": "node test/multiclient-check.mjs"
+    "test:multiclient": "node test/multiclient-check.mjs",
+    "test:token-real": "node test/token-real-check.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

@@ -86,6 +86,7 @@ node test/e2e.mjs          # 假 bridge 全链路（含新增进程/daemon/文�
 node test/smoke.mjs        # 工具清单冒烟（离线错误断言 + resources URI）
 node test/auth-check.mjs   # token 握手回归（fake bridge）
 node test/multiclient-check.mjs  # 多客户端并发（真机，需游戏运行）
+node test/token-real-check.mjs   # 真实 token 鉴权（真机，需游戏主菜单 + cfg 设置 Token）
 node test/real-all.mjs     # 真机回归（19 项，需游戏在 KE 扩展会话）
 node test/real-verify.mjs  # 真机验证新增能力（RAM/进程/文件/防火墙/resources/ReadOnly）
 ```
