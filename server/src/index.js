@@ -1201,7 +1201,7 @@ server.tool(
     debug: z.boolean().optional().describe("默认 true 带 -enabledebug -enablefc（游戏调试模式）；false 则不带"),
     dryRun: z.boolean().optional().describe("true=只返回命令不实际启动"),
   },
-  async ({ ext, username, console, debug, dryRun }) => {
+  async ({ ext, username, console, debug, dryRun, waitForExtension, waitTimeoutMs }) => {
     // 防多开：进程检测（tasklist），游戏已在跑则拒绝
     if (!dryRun && (await isGameRunning())) {
       return {
