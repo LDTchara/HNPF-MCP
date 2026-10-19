@@ -228,17 +228,38 @@ public static partial class Executor
 
     private static object TerminalHistory(OS os, int lines)
     {
-        var list = os.terminal?.GetRecentTerminalHistoryList();
-        if (list == null) return new Dictionary<string, object> { ["lines"] = new List<object>() };
-        // ⚠️ 取**末尾** N 行，不是开头：这个列表是"从旧到新"的，用 Take() 会拿到最早的内容，
-        // 排查时看到的是过期输出（2026-10-17 实测踩到：lines=12 时看不到最新的命令结果）。
-        var trimmed = list.Skip(Math.Max(0, list.Count - lines)).ToList();
+        var all = ReadTerminalHistory(os);
+        if (all == null) return new Dictionary<string, object> { ["lines"] = new List<object>() };
+        // 取**末尾** N 行；total 是完整历史行数（原版 GetRecentTerminalHistoryList 只返回最旧 30 行，不能用）
+        var start = Math.Max(0, all.Count - lines);
+        var trimmed = all.GetRange(start, all.Count - start);
         return new Dictionary<string, object>
         {
             ["lines"] = trimmed,
             ["count"] = trimmed.Count,
-            ["total"] = list.Count
+            ["total"] = all.Count
         };
+    }
+
+    /// <summary>
+    /// 读终端完整历史（从旧到新）。原版 <c>Terminal.GetRecentTerminalHistoryList()</c>
+    /// 实现是 "for (i=0; i&lt;30 &amp;&amp; i&lt;history.Count; i++)"，返回的是**最旧** 30 行；
+    /// 而 <c>history</c> 是 private 字段，这里反射取完整列表。
+    /// 失败时退回原版接口（此时只能看到最旧 30 行，属降级，不是正确语义）。
+    /// </summary>
+    private static List<string> ReadTerminalHistory(OS os)
+    {
+        if (os?.terminal == null) return null;
+        try
+        {
+            var field = typeof(OS).Assembly.GetType("Hacknet.Terminal")
+                ?.GetField("history", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (field?.GetValue(os.terminal) is List<string> history)
+                return history;
+        }
+        catch { }
+        try { return os.terminal.GetRecentTerminalHistoryList(); }
+        catch { return null; }
     }
 
     private static object GetMission(OS os)

@@ -288,7 +288,8 @@ server.tool(
     const logPath = pathMod.resolve(requested);
     // 安全边界：默认只允许读游戏目录 BepInEx/ 下的日志；HNPF_LOG_ALLOW_ANY=1 才放开任意路径
     const allowAny = process.env.HNPF_LOG_ALLOW_ANY === "1";
-    const bepInExRoot = pathMod.resolve(path.join(gameRoot, "BepInEx"));
+    // ⚠️ 这里不能用 path.join：回调参数 `path` 遮蔽了模块 path，之前会抛 "Cannot read properties of undefined (reading 'join')"
+    const bepInExRoot = pathMod.resolve(pathMod.join(gameRoot, "BepInEx"));
     const withinBepInEx = logPath === bepInExRoot || logPath.startsWith(bepInExRoot + pathMod.sep);
     if (!allowAny && !withinBepInEx && logPath !== pathMod.resolve(process.env.HNPF_LOG || "")) {
       return {
