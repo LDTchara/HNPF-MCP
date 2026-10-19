@@ -101,7 +101,7 @@ MCP 宿主配置示例（详见 `../docs/使用指南.md` §1.1）：
 }
 ```
 
-## 三、工具清单（63 个）
+## 三、工具清单（64 个）
 
 | 分类 | 工具 |
 |---|---|
@@ -119,7 +119,7 @@ MCP 宿主配置示例（详见 `../docs/使用指南.md` §1.1）：
 | 原版小操作 | `reboot_computer(instant?)` `set_cd_tray(open)` `clear_terminal` `add_note(text)` `scan_network` `probe_target` `get_achievements` |
 | 批量/生命周期 | `run_batch(steps,continueOnError?)`（34 个动作类工具映射，waitMs/快照/退出等待与单工具一致）`exit_to_menu` `pipe_probe(candidates?)` |
 | 模组专属 | `modtool_list` `modtool_call(tool,params?)`（连接器注册的 13 个 `ke.*` 等） |
-| 游戏启动/主菜单 | `launch_game(ext?,username?,console?,debug?,dryRun?)` `menu_enter_extension(username?,pass?,ext?)` `menu_load_extension_save(userFile,username,ext?)` |
+| 游戏启动/主菜单 | `launch_game(ext?,username?,console?,debug?,dryRun?,waitForExtension?,waitTimeoutMs?)` `launch_status` `menu_enter_extension(username?,pass?,ext?)` `menu_load_extension_save(userFile,username,ext?)`（menu_* 均回传 entered/verified/thisComputerIP） |
 | 日志 | `game_log_tail(lines?,filter?,offset?,path?)`（读本机 BepInEx LogOutput.log） |
 
 注：`ip` 参数省略时：`computer/fs/port.*` 作用于**当前连接节点**；`mail/irc/board/hub/os.memory/firewall.*/daemon.list` 为**当前连接 → 本机**回退。

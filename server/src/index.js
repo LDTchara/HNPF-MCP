@@ -985,7 +985,19 @@ server.tool(
   },
   async ({ username, pass, ext }) => {
     const r = await call("menu.enter_extension", { username, pass, ext });
-    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+    const v = r?.ok ? await verifyEnteredExtension() : { entered: false, thisComputerIP: null };
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          ...r,
+          entered: v.entered,
+          verified: v.entered,
+          thisComputerIP: v.thisComputerIP ?? null,
+          ...(v.error ? { verifyError: v.error } : {}),
+        }, null, 2),
+      }],
+    };
   }
 );
 
@@ -999,7 +1011,19 @@ server.tool(
   },
   async ({ userFile, username, ext }) => {
     const r = await call("menu.load_extension_save", { userFile, username, ext });
-    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+    const v = r?.ok ? await verifyEnteredExtension() : { entered: false, thisComputerIP: null };
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          ...r,
+          entered: v.entered,
+          verified: v.entered,
+          thisComputerIP: v.thisComputerIP ?? null,
+          ...(v.error ? { verifyError: v.error } : {}),
+        }, null, 2),
+      }],
+    };
   }
 );
 
@@ -1045,15 +1069,54 @@ function findGamePids() {
   });
 }
 
+let autoEnterTask = null;
+let autoEnterSeq = 0;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 最近一次 launch_game 后台自动进扩展任务的快照（不阻塞）。 */
+function snapshotAutoEnter() {
+  if (!autoEnterTask) return { state: "none", launchId: null };
+  const t = autoEnterTask;
+  return {
+    state: t.phase,
+    launchId: t.launchId,
+    ext: t.ext,
+    username: t.username,
+    gamePid: t.gamePid,
+    startedAt: t.startedAt,
+    waitedMs: Date.now() - t.startedAt,
+    probes: t.probes,
+    thisComputerIP: t.thisComputerIP ?? null,
+    lastError: t.lastError ? String(t.lastError.message || t.lastError) : null,
+  };
+}
+
+/**
+ * menu.enter_extension 返回 ok 不代表真的进了扩展（旧 bug：同名账号 AddUser false 时
+ * 游戏报 "Error auto-loading Extension" 但 bridge 仍返回 ok）→ 等 2.5s 后读 OS 会话校验。
+ */
+async function verifyEnteredExtension() {
+  await sleep(2500);
+  try {
+    const st = await call("state.get", {}, 5000);
+    return { entered: !!st?.thisComputerIP, thisComputerIP: st?.thisComputerIP ?? null };
+  } catch (e) {
+    return { entered: false, thisComputerIP: null, error: String(e.message || e) };
+  }
+}
+
 /**
  * 后台自动进扩展（替代 -extstart 直进）：正常启动到主菜单 → 等 bridge 管道就绪 →
  * 调 menu.enter_extension（MenuExecutor 在主菜单阶段执行，插件真正加载）。
  * -extstart 会跳过主菜单流程导致扩展插件（KE 等）加载异常/退出不卸载——已弃用。
+ *
+ * 返回 task：{ launchId, phase, promise, ... }；phase 会依次经过
+ *   launching → waiting_bridge → entering → verifying → entered / failed / timeout
+ * task.promise 永不 reject，resolve 时 phase 即为最终状态。
  */
-function scheduleAutoEnterExtension(ext, { username, pass } = {}) {
+function scheduleAutoEnterExtension(ext, { username, pass, gamePid } = {}) {
   // 轮询节奏：200ms 起步、×1.7 指数退避、封顶 2s。
-  //   热启动（游戏已在主菜单 / 扩展已加载）→ 首探即中，省掉以前固定 5s 的干等；
-  //   冷启动（游戏刚拉起要 20~45s）→ 退避后稳定在 2s 一次，也不至于空转。
   // 总预算 60s：实测从 launch_game 到 bridge 可用约 45s，旧 30s 上限会误报超时。
   const TOTAL_BUDGET_MS = 60000;
   const FIRST_DELAY_MS = 200;
@@ -1061,50 +1124,71 @@ function scheduleAutoEnterExtension(ext, { username, pass } = {}) {
   const BACKOFF = 1.7;
 
   const startedAt = Date.now();
-  (async () => {
+  const task = {
+    launchId: ++autoEnterSeq,
+    phase: "launching",
+    ext,
+    username: username ?? "mcp",
+    gamePid: gamePid ?? null,
+    startedAt,
+    probes: 0,
+    thisComputerIP: null,
+    lastError: null,
+    promise: null,
+  };
+
+  task.promise = (async () => {
     let delay = FIRST_DELAY_MS;
-    let probes = 0;
     let lastErr = null;
 
     while (Date.now() - startedAt < TOTAL_BUDGET_MS) {
-      await new Promise((r) => setTimeout(r, delay));
+      task.phase = "waiting_bridge";
+      await sleep(delay);
       delay = Math.min(Math.round(delay * BACKOFF), MAX_DELAY_MS);
-      probes++;
+      task.probes++;
       try {
         await ensureBridge();
-        // 主菜单阶段 MenuExecutor 处理 menu.enter_extension；进扩展后 OS 会话接管
+        task.phase = "entering";
         const r = await call("menu.enter_extension", { ext, username, pass }, 10000);
         if (r?.ok) {
-          // 防假阳性：menu.enter_extension 返回 ok 不代表真进扩展（旧 bug：同名账号 AddUser false
-          // 时游戏报 "Error auto-loading Extension" 但 bridge 仍返回 ok）——延迟 3s 验证 OS 会话
-          await new Promise((r2) => setTimeout(r2, 3000));
-          try {
-            const st = await call("state.get", {}, 5000);
+          task.phase = "verifying";
+          const v = await verifyEnteredExtension();
+          if (v.entered) {
+            task.phase = "entered";
+            task.thisComputerIP = v.thisComputerIP;
             const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
-            if (st?.thisComputerIP) {
-              process.stderr.write(`[hnpf] 已自动进扩展 ${ext}（主菜单路径，验证通过，耗时 ${secs}s / ${probes} 次探测）\n`);
-            } else {
-              process.stderr.write(`[hnpf] 警告：menu.enter_extension 返回 ok 但未检测到扩展会话——账号/插件加载可能失败（假阳性）\n`);
-            }
-          } catch {
-            process.stderr.write(`[hnpf] 警告：menu.enter_extension 返回 ok 但 state.get 不可用——可能未真正进扩展\n`);
+            process.stderr.write(`[hnpf] 已自动进扩展 ${ext}（主菜单路径，验证通过，耗时 ${secs}s / ${task.probes} 次探测）\n`);
+          } else {
+            task.phase = "failed";
+            task.lastError = v.error || "menu.enter_extension returned ok but no OS session (fake positive)";
+            process.stderr.write(`[hnpf] 警告：menu.enter_extension 返回 ok 但未检测到扩展会话——账号/插件加载可能失败（假阳性）\n`);
           }
-          return;
+          return task;
         }
-        // 有响应说明 MenuExecutor 已处理（成功或失败）——已过主菜单阶段，停止，避免重复建账号
-        if (r != null) return;
+        if (r != null) {
+          task.phase = "failed";
+          task.lastError = "menu.enter_extension returned non-ok";
+          return task;
+        }
       } catch (e) {
-        lastErr = e;   // 管道未就绪/超时（主菜单未到）→ 继续退避重试
+        lastErr = e;
+        task.lastError = e;
       }
     }
 
+    task.phase = "timeout";
+    task.lastError = lastErr || "auto-enter extension timeout";
     const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
     process.stderr.write(
-      `[hnpf] 自动进扩展超时（${secs}s / ${probes} 次探测）——游戏可能未启动成功或进扩展出错` +
+      `[hnpf] 自动进扩展超时（${secs}s / ${task.probes} 次探测）——游戏可能未启动成功或进扩展出错` +
       (lastErr ? `；最后一次错误：${lastErr.message || lastErr}` : "") +
       "。可手动调用 menu_enter_extension 重试。\n"
     );
+    return task;
   })();
+
+  autoEnterTask = task;
+  return task;
 }
 
 server.tool(
@@ -1208,11 +1292,54 @@ server.tool(
       const pids = await findGamePids();
       gamePid = pids[0] ?? null;
     }
+    let task = null;
+    if (ext) task = scheduleAutoEnterExtension(ext, { username, gamePid });
+
+    if (ext && waitForExtension) {
+      const timeoutMs = waitTimeoutMs ?? 30000;
+      const finalTask = await Promise.race([
+        task.promise,
+        sleep(timeoutMs).then(() => null),
+      ]);
+      const snap = snapshotAutoEnter();
+      const entered = snap.state === "entered";
+      const timedOut = finalTask == null && !entered;
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ok: entered,
+            entered,
+            phase: entered ? "entered" : (timedOut ? "timeout" : snap.state),
+            waitedMs: snap.waitedMs,
+            waitTimeoutMs: timeoutMs,
+            probes: snap.probes,
+            launchId: snap.launchId,
+            gamePid: snap.gamePid ?? gamePid,
+            thisComputerIP: snap.thisComputerIP,
+            lastError: timedOut ? `waitForExtension timeout after ${timeoutMs}ms` : snap.lastError,
+            ext,
+            note: entered
+              ? `已进入扩展 ${ext}（主菜单路径，state.get 验证通过）`
+              : `尚未确认进入扩展 ${ext}；后台任务继续运行，可用 launch_status 查询`,
+          }, null, 2),
+        }],
+      };
+    }
+
     const note = ext
-      ? `游戏正常启动；后台自动进扩展 ${ext}（主菜单路径，通常 5~15s，冷启动最多 60s，插件正常加载）。${modeNote}`
+      ? `游戏正常启动；后台自动进扩展 ${ext}（主菜单路径，通常 5~15s，冷启动最多 60s，插件正常加载）。可传 waitForExtension=true 等待结果回传，或用 launch_status 查询。${modeNote}`
       : `游戏启动中，bridge 通常 5~15s 内连上（冷启动最多 60s）。${modeNote}`;
-    if (ext) scheduleAutoEnterExtension(ext, { username });
-    return { content: [{ type: "text", text: JSON.stringify({ ok: true, pid: gamePid, launcherPid: child.pid, exe, args, ext: ext || null, note }, null, 2) }] };
+    return { content: [{ type: "text", text: JSON.stringify({ ok: true, pid: gamePid, launcherPid: child.pid, exe, args, ext: ext || null, launchId: task?.launchId ?? null, note }, null, 2) }] };
+  }
+);
+
+server.tool(
+  "launch_status",
+  "查询最近一次 launch_game(ext) 的后台自动进扩展任务状态（不阻塞）：state=launching/waiting_bridge/entering/verifying/entered/failed/timeout/none；含 waitedMs/probes/gamePid/thisComputerIP/lastError。",
+  {},
+  async () => {
+    return { content: [{ type: "text", text: JSON.stringify(snapshotAutoEnter(), null, 2) }] };
   }
 );
 
