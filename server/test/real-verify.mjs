@@ -47,8 +47,9 @@ function bad(label, extra = "") { fail++; console.log(`[FAIL] ${label}${extra ? 
 // 1) ping / build
 {
   const r = await call("ping");
-  if (!r.isError && r.j?.build === "2026-10-18-2330") ok("ping 新 bridge", `build=${r.j.build}`);
-  else bad("ping 新 bridge", r.text.slice(0, 120));
+  if (!r.isError && /^\d{4}-\d{2}-\d{2}-\d{4}$/.test(r.j?.build ?? "") && r.j?.version === "0.2.0")
+    ok("ping 新 bridge", `build=${r.j.build}`);
+  else bad("ping 新 bridge", r.text.slice(0, 160));
 }
 
 // 2) RAM 修复
@@ -174,6 +175,71 @@ let processes = null;
     else bad("readResource hnpf://state", rr.contents[0].text.slice(0, 120));
   } catch (e) {
     bad("readResource hnpf://state", String(e.message).slice(0, 160));
+  }
+}
+
+// 8.5) 原版小能力 + 成就 + 分支任务
+{
+  // reboot 要打远程节点（重启本机会把当前 OS 会话重启掉）
+  const stNow = await call("get_state");
+  const nmNow = await call("get_network_map", { summary: true });
+  const otherNode = (nmNow.j?.nodes ?? []).find((n) => n.ip && n.ip !== stNow.j?.thisComputerIP);
+  let rebootTarget = null;
+  if (otherNode) {
+    const c = await call("connect", { ip: otherNode.ip });
+    if (!c.isError) rebootTarget = otherNode.ip;
+  }
+  if (rebootTarget) {
+    const rb = await call("reboot_computer", { instant: false });
+    if (!rb.isError) ok("reboot_computer", `target=${rb.j?.target}`);
+    else bad("reboot_computer", rb.text.slice(0, 140));
+    await call("disconnect");
+  } else console.log("[SKIP] reboot_computer（没有可连接的远程节点）");
+  await new Promise((r) => setTimeout(r, 800));
+  const ct = await call("set_cd_tray", { open: true });
+  if (!ct.isError) ok("set_cd_tray", `open=${ct.j?.open}`);
+  else bad("set_cd_tray", ct.text.slice(0, 140));
+  const ct2 = await call("set_cd_tray", { open: false });
+  const cl = await call("clear_terminal");
+  if (!cl.isError) ok("clear_terminal", "");
+  else bad("clear_terminal", cl.text.slice(0, 140));
+  const an = await call("add_note", { text: "mcp-verify note" });
+  if (!an.isError) ok("add_note", "");
+  else bad("add_note", an.text.slice(0, 140));
+  const sn = await call("scan_network");
+  if (!sn.isError) ok("scan_network", `target=${sn.j?.target}`);
+  else bad("scan_network", sn.text.slice(0, 140));
+  const pt = await call("probe_target");
+  if (!pt.isError) ok("probe_target", `target=${pt.j?.target}`);
+  else bad("probe_target", pt.text.slice(0, 140));
+  await new Promise((r) => setTimeout(r, 1200));
+  const ac = await call("get_achievements");
+  if (!ac.isError && Array.isArray(ac.j?.unlocked)) ok("get_achievements", `${ac.j.unlocked.length} 个`);
+  else bad("get_achievements", ac.text.slice(0, 140));
+  const gm = await call("get_mission");
+  if (!gm.isError && Array.isArray(gm.j?.branchMissions)) ok("get_mission branchMissions", `${gm.j.branchMissions.length} 个`);
+  else bad("get_mission branchMissions", gm.text.slice(0, 140));
+}
+
+// 8.6) L3 connector（KE 测试扩展内应注册 13 个 ke.*）
+{
+  const ml = await call("modtool_list");
+  const tools = ml.j?.tools ?? [];
+  const keTools = tools.filter((t) => (t.name ?? "").startsWith("ke."));
+  if (keTools.length === 13) ok("modtool_list ke.*", `${keTools.length} 个`);
+  else bad("modtool_list ke.*", `期望 13，实际 ${keTools.length}: ${keTools.map((t) => t.name).join(",")}`);
+
+  const keCalls = [
+    "ke.phaseswift.state", "ke.phaseswift.detail", "ke.aircraft.state", "ke.customtrial.state",
+    "ke.vm.state", "ke.porthackv2.state", "ke.proxykiller.state", "ke.config.get",
+    "ke.flag.find", "ke.clock.state", "ke.color.state", "ke.titlebanner.state", "ke.ending.state",
+  ];
+  for (const name of keCalls) {
+    const args = name === "ke.flag.find" ? { tool: name, params: { prefix: "" } } : { tool: name };
+    const r = await call("modtool_call", args);
+    const result = r.j?.result ?? r.j;
+    if (!r.isError) ok(name, JSON.stringify(result).slice(0, 90));
+    else bad(name, r.text.slice(0, 140));
   }
 }
 

@@ -129,6 +129,20 @@ function fakeResult(method, params = {}) {
       return { ip: params.ip || "cur", solved: false, solutionLength: 6, analysisPasses: 1, additionalDelay: 0, complexity: 1 };
     case "firewall.solve":
       return { ok: true, solved: true, attempted: true, ip: params.ip || "cur" };
+    case "game.reboot":
+      return { ok: true, instant: !!params.instant, target: "10.0.0.2" };
+    case "game.cd_tray":
+      return { ok: true, open: !!params.open, target: "10.0.0.2" };
+    case "game.clear_terminal":
+      return { ok: true };
+    case "game.add_note":
+      return { ok: true, text: params.text };
+    case "game.scan":
+      return { ok: true, target: "10.0.0.2", note: "scan submitted" };
+    case "game.probe":
+      return { ok: true, target: "10.0.0.2", note: "probe submitted" };
+    case "achievements.list":
+      return { count: 2, unlocked: ["A_NEW_FRIEND", "DARK_NET"], note: "游戏本地解锁记录" };
     case "game.exit_to_menu":
       return { ok: true, message: "exit to main menu requested" };
     case "events.get":

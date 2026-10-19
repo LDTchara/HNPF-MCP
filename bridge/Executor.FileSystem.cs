@@ -8,7 +8,7 @@ public static partial class Executor
     private static object ListFiles(OS os, string ip, string path)
     {
         var comp = FindComputer(os, ip);
-        var folder = ResolveFolder(comp, path);
+        var folder = ResolveFolder(comp, path) ?? throw new ArgumentException($"folder not found: {path}");
         var result = new List<object>();
         ProjectFolder(folder, 0, 8, result);
         return new Dictionary<string, object> { ["ip"] = ip, ["path"] = path ?? "/", ["entries"] = result };
@@ -31,12 +31,12 @@ public static partial class Executor
     private static object WriteFile(OS os, string ip, string path, string file, string content)
     {
         var comp = FindComputer(os, ip);
-        var folder = ResolveFolder(comp, path);
-        var fe = folder?.searchForFile(file);
+        var folder = ResolveFolder(comp, path) ?? throw new ArgumentException($"folder not found: {path}");
+        var fe = folder.searchForFile(file);
         if (fe == null)
         {
             fe = new FileEntry { name = file, data = content ?? "" };
-            folder?.files.Add(fe);
+            folder.files.Add(fe);
         }
         else
         {
@@ -105,12 +105,12 @@ public static partial class Executor
     private static object AppendFile(OS os, string ip, string path, string file, string content)
     {
         var comp = FindComputer(os, ip);
-        var folder = ResolveFolder(comp, path);
-        var fe = folder?.searchForFile(file);
+        var folder = ResolveFolder(comp, path) ?? throw new ArgumentException($"folder not found: {path}");
+        var fe = folder.searchForFile(file);
         if (fe == null)
         {
             fe = new FileEntry { name = file, data = content ?? "" };
-            folder?.files.Add(fe);
+            folder.files.Add(fe);
         }
         else
         {

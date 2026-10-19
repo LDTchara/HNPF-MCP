@@ -8,7 +8,7 @@ AI 宿主 ──stdio──► server (Node.js, MCP SDK)
                         ▼
 Hacknet 游戏进程 ── bridge (C# BepInEx 插件)
    ├─ 主线程泵（OSUpdateEvent 消费请求，杜绝竞态）
-   ├─ 51 个分发方法（状态/文件/命令/端口/任务/模组/daemon/主菜单…）+ auth 握手
+   ├─ 58 个分发方法（状态/文件/命令/端口/任务/模组/daemon/原版小操作/主菜单…）+ auth 握手
    └─ 事件推送（node.connected/disconnected、game.loaded/saved 等）
 ```
 
@@ -38,14 +38,14 @@ dotnet build bridge/HnpfMcpBridge.csproj -c Release
 
 ### L3 连接器（可选，KE 等模组专属状态）
 
-想暴露某模组的独有内存态（如 KE 的 PhaseSwift/CustomTrial/VM/PortHackV2/ProxyKiller），**不需要改模组本体**，做一个连接器插件即可（实现见 `../connector/`，现含 **11 个 `ke.*`**）：
+想暴露某模组的独有内存态（如 KE 的 PhaseSwift/CustomTrial/VM/PortHackV2/ProxyKiller），**不需要改模组本体**，做一个连接器插件即可（实现见 `../connector/`，现含 **13 个 `ke.*`**）：
 
 ```bash
 dotnet build ../connector/HnpfMcpConnector.csproj -c Release
 # 产物：../connector/bin/Release/net472/HnpfMcpConnector.dll → 复制到扩展的 Plugins/（推荐）或 BepInEx/plugins/
 ```
 
-原理：连接器**不声明任何 `[BepInDependency]`**（bridge 是全局插件，扩展模式依赖校验看不到它，声明会误报 missing dependencies）——全部走运行时反射访问模组类型；`[McpTool]` 静态方法由 bridge 在 OSLoaded / 进扩展时反射发现，**无需注册代码**。新模组照此模式加一组 `[McpTool]` 方法即可，MCP 侧用 `modtool_list`/`modtool_call` 调用。
+原理：连接器**不声明任何 `[BepInDependency]`**（bridge 是全局插件，扩展模式依赖校验看不到它，声明会误报 missing dependencies）——全部走运行时反射访问模组类型；`[McpTool]` 静态方法由 bridge 在 OSLoaded / 进扩展时反射发现，**无需注册代码**。新模组照此模式加一组 `[McpTool]` 方法即可，MCP 侧用 `modtool_list`/`modtool_call` 调用；最小模板见 `examples/KeMcpAdapter.cs`。
 
 配置（首次启动生成 `BepInEx/config/com.HnpfMcp.Bridge.cfg`）：
 
@@ -81,6 +81,7 @@ node src/index.js
 node test/smoke.mjs        # 协议冒烟（游戏可不运行；断言 isError + resources URI）
 node test/e2e.mjs          # 端到端（自动起假 bridge，覆盖全部工具含新增进程/daemon/文件/防火墙）
 node test/auth-check.mjs   # token 握手（fake bridge 返回 authenticated）
+node test/multiclient-check.mjs  # 多客户端并发（真机，需游戏运行）
 ```
 
 环境变量：`HNPF_PIPE`（管道完整路径，默认 `\\.\pipe\hnpf-mcp-bridge`）、`HNPF_TOKEN`（与 bridge cfg `[Pipe] Token` 一致）、`HNPF_GAME`（游戏路径）、`HNPF_AUDIT=off`（关审计）、`HNPF_LOG`（game_log_tail 默认日志路径）。
@@ -99,7 +100,7 @@ MCP 宿主配置示例（详见 `../docs/使用指南.md` §1.1）：
 }
 ```
 
-## 三、工具清单（56 个）
+## 三、工具清单（63 个）
 
 | 分类 | 工具 |
 |---|---|
@@ -114,8 +115,9 @@ MCP 宿主配置示例（详见 `../docs/使用指南.md` §1.1）：
 | 邮件/IRC/论坛 | `mail_list(ip?)` `mail_read(ip?,user,folder?,subject)` `irc_read(ip?)` `board_read(ip?)` |
 | 任务/情报 | `submit_mission(details,sender?)` `hub_list(ip?)` `hub_accept(id,ip?)` `os_memory(ip?)` |
 | 交互 | `shell_drive(action?)` `terminal_type(text)` |
-| 批量/生命周期 | `run_batch(steps,continueOnError?)`（28 个动作类工具映射）`exit_to_menu` `pipe_probe(candidates?)` |
-| 模组专属 | `modtool_list` `modtool_call(tool,params?)`（连接器注册的 `ke.*` 等） |
+| 原版小操作 | `reboot_computer(instant?)` `set_cd_tray(open)` `clear_terminal` `add_note(text)` `scan_network` `probe_target` `get_achievements` |
+| 批量/生命周期 | `run_batch(steps,continueOnError?)`（34 个动作类工具映射，waitMs/快照/退出等待与单工具一致）`exit_to_menu` `pipe_probe(candidates?)` |
+| 模组专属 | `modtool_list` `modtool_call(tool,params?)`（连接器注册的 13 个 `ke.*` 等） |
 | 游戏启动/主菜单 | `launch_game(ext?,username?,console?,debug?,dryRun?)` `menu_enter_extension(username?,pass?,ext?)` `menu_load_extension_save(userFile,username,ext?)` |
 | 日志 | `game_log_tail(lines?,filter?,offset?,path?)`（读本机 BepInEx LogOutput.log） |
 
@@ -135,8 +137,8 @@ MCP 宿主配置示例（详见 `../docs/使用指南.md` §1.1）：
 - **线程安全**：所有游戏对象访问都在 `OSUpdateEvent`（主线程）回调内执行；请求经 `ConcurrentQueue` 入队，每帧最多消费 8 个防掉帧。
 - **序列化**：游戏对象循环引用多，全部手写 DTO 投影（见 `Executor.cs`），绝不对游戏对象直接 `JSON.stringify`。
 - **成员兼容**：对 `RamModule` 等有版本差异的成员用反射访问，编译期不绑定成员名。
-- **只读模式**：`ReadOnly=true` 时在方法分发入口拒绝全部写方法（`fs.write/append/delete/move/replace`、`flags.*`、`port.*`、`admin.take`、`game.execute_command/connect/disconnect/run_action/run_hack_script/launch_exe/save/exit_to_menu`、`mission.submit`、`hub.accept`、`shell.drive`、`terminal.type`、`process.kill`、`firewall.*`、`menu.*`）；读方法不受影响。命令白/黑名单只约束 `execute_command`/`launch_exe`/游戏内 `mcp exec`。
-- **扩展**：模组/连接器通过 `[McpTool]` 特性注册专属工具（反射自动装配，已实现；KE 连接器 11 个 `ke.*`）。
+- **只读模式**：`ReadOnly=true` 时在方法分发入口拒绝全部写方法（`fs.write/append/delete/move/replace`、`flags.*`、`port.*`、`admin.take`、`game.execute_command/connect/disconnect/run_action/run_hack_script/launch_exe/save/exit_to_menu`、`mission.submit`、`hub.accept`、`shell.drive`、`terminal.type`、`process.kill`、`game.reboot`、`game.cd_tray`、`game.add_note`、`firewall.*`、`menu.*`）；读方法不受影响。命令白/黑名单只约束 `execute_command`/`launch_exe`/游戏内 `mcp exec`。
+- **扩展**：模组/连接器通过 `[McpTool]` 特性注册专属工具（反射自动装配，已实现；KE 连接器 13 个 `ke.*`）。
 
 ## 五、已知坑
 

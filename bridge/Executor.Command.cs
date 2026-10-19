@@ -28,6 +28,7 @@ public static partial class Executor
     private static object RunHackScript(OS os, string script)
     {
         if (string.IsNullOrWhiteSpace(script)) throw new ArgumentException("script is empty");
+        if (script.Contains("..")) throw new ArgumentException("script path must stay inside the game Content folder");
         HackerScriptExecuter.runScript(script, os);
         return new Dictionary<string, object>
         {
@@ -103,7 +104,8 @@ public static partial class Executor
         if (!executor.TryParse(out var ex) || actionInfo == null)
             throw new ArgumentException($"bad action xml: {ex?.Message ?? "no action element found"}");
 
-        var action = ActionsLoader.ReadAction(actionInfo);
+        var action = ActionsLoader.ReadAction(actionInfo)
+            ?? throw new ArgumentException($"action not found: {actionInfo.Name}");
         action.Trigger(os);
         return new Dictionary<string, object>
         {

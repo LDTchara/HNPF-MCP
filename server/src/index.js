@@ -33,28 +33,34 @@ async function ensureBridge() {
 // ---------------- 审计日志（HNPF_AUDIT=off 关闭；写 server/audit.log） ----------------
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIT_FILE = path.join(__dirname, "..", "audit.log");
-const AUDIT_KEYS = ["cmd", "ip", "port", "tool", "exeName", "script", "user", "name", "prefix"];
+const AUDIT_KEYS = [
+  "cmd", "ip", "port", "tool", "exeName", "script", "user", "name", "prefix",
+  "file", "path", "toPath", "toFile", "target", "pid", "sender", "subject", "text", "id",
+];
 
-function audit(method, params) {
+/** 审计：同步追加（退出/崩溃时也不丢行），参数截断防膨胀 */
+function audit(method, params, extra) {
   try {
     if (process.env.HNPF_AUDIT === "off") return;
     const pick = {};
     for (const k of AUDIT_KEYS) {
       if (params?.[k] !== undefined) pick[k] = String(params[k]).slice(0, 80);
     }
+    if (extra?.error) pick.error = String(extra.error).slice(0, 200);
     const line = `${new Date().toISOString()}  ${method}  ${JSON.stringify(pick)}\n`;
-    void import("node:fs").then((fs) => fs.appendFile(AUDIT_FILE, line, () => {}));
+    fs.appendFileSync(AUDIT_FILE, line);
   } catch { /* 审计失败不影响调用 */ }
 }
 
-/** 调用 bridge；仅连接类错误提示游戏离线，业务错误原样透传 */
-async function call(method, params) {
+/** 调用 bridge；仅连接类错误提示游戏离线，业务错误原样透传。timeoutMs 可覆盖默认 8s */
+async function call(method, params, timeoutMs) {
   audit(method, params);
   try {
     await ensureBridge();
-    return await bridge.call(method, params);
+    return await bridge.call(method, params, timeoutMs ?? bridge.timeoutMs);
   } catch (err) {
     const msg = err.message || String(err);
+    audit(method, params, { error: msg });
     if (/not connected|ENOENT|ECONNREFUSED|pipe closed|timeout/i.test(msg)) {
       throw new Error(`[game offline] ${msg} — 请先启动 Hacknet (Pathfinder) 并加载 HnpfMcpBridge 插件`);
     }
@@ -64,7 +70,7 @@ async function call(method, params) {
 
 const server = new McpServer({
   name: "hnpf-mcp-server",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 // ---------------- 查询类 ----------------
@@ -85,13 +91,13 @@ server.tool(
   {},
   async () => {
     const r = await call("state.get");
-    return { content: [{ type: "text", text: JSON.stringify({ ...r, bridgeVersion, bridgePipe, serverVersion: "0.1.0" }, null, 2) }] };
+    return { content: [{ type: "text", text: JSON.stringify({ ...r, bridgeVersion, bridgePipe, serverVersion: "0.2.0" }, null, 2) }] };
   }
 );
 
 server.tool(
   "get_network_map",
-  "获取全网络节点列表（IP/名称/链接/端口/用户数）。summary=true 只返回核心字段（ip/idName/name/visible/connected）——只要拓扑时用，省 token（B4 大响应裁剪）",
+  "获取全网络节点列表（IP/名称/链接/端口/用户数）。summary=true 只返回核心字段（ip/idName/name/visible/connected）——只要拓扑时用，省 token（大响应裁剪）",
   { summary: z.boolean().optional().describe("true=只返回核心字段（拓扑）；默认 false=全字段（含端口/链接）") },
   async ({ summary = false }) => {
     const r = await call("network.map", { summary });
@@ -141,7 +147,7 @@ server.tool(
 
 server.tool(
   "get_mission",
-  "当前任务信息（标题、目标完成进度）",
+  "当前任务信息（标题、目标完成进度；原版多任务场景会额外返回 branchMissions 列表）",
   {},
   async () => {
     const r = await call("mission.get");
@@ -276,11 +282,26 @@ server.tool(
     path: z.string().optional().describe("自定义日志路径（默认 HNPF_LOG 或 <游戏目录>/BepInEx/LogOutput.log）"),
   },
   async ({ lines, filter, offset, path }) => {
-    const fs = await import("node:fs");
     const pathMod = await import("node:path");
-    const logPath =
-      path || process.env.HNPF_LOG ||
-      pathMod.join(pathMod.dirname(GAME_EXE), "BepInEx", "LogOutput.log");
+    const gameRoot = pathMod.dirname(GAME_EXE);
+    const requested = path || process.env.HNPF_LOG || pathMod.join(gameRoot, "BepInEx", "LogOutput.log");
+    const logPath = pathMod.resolve(requested);
+    // 安全边界：默认只允许读游戏目录 BepInEx/ 下的日志；HNPF_LOG_ALLOW_ANY=1 才放开任意路径
+    const allowAny = process.env.HNPF_LOG_ALLOW_ANY === "1";
+    const bepInExRoot = pathMod.resolve(path.join(gameRoot, "BepInEx"));
+    const withinBepInEx = logPath === bepInExRoot || logPath.startsWith(bepInExRoot + pathMod.sep);
+    if (!allowAny && !withinBepInEx && logPath !== pathMod.resolve(process.env.HNPF_LOG || "")) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ok: false,
+            reason: "日志路径超出允许范围（仅允许游戏目录 BepInEx/ 下文件；需要读其它文件时设 HNPF_LOG_ALLOW_ANY=1）",
+            path: logPath,
+          }, null, 2),
+        }],
+      };
+    }
 
     let stat;
     try { stat = fs.statSync(logPath); }
@@ -707,6 +728,76 @@ server.tool(
 );
 
 server.tool(
+  "reboot_computer",
+  "重启当前连接节点（等价终端 reboot；写操作）。instant=true 立即重启（等价 reboot -i）",
+  { instant: z.boolean().optional().describe("true = 立即重启（-i）") },
+  async ({ instant }) => {
+    const r = await call("game.reboot", { instant: !!instant });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "set_cd_tray",
+  "打开/关闭当前连接节点的光驱托盘（等价 openCDTray/closeCDTray；物理攻击入口）",
+  { open: z.boolean().describe("true=打开，false=关闭") },
+  async ({ open }) => {
+    const r = await call("game.cd_tray", { open: !!open });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "clear_terminal",
+  "清空终端显示（等价 clear；不影响终端历史读取）",
+  {},
+  async () => {
+    const r = await call("game.clear_terminal");
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "add_note",
+  "向游戏内 Notes 添加一条便签（等价终端 addNote；支持 \\n 换行）",
+  { text: z.string().describe("便签文本") },
+  async ({ text }) => {
+    const r = await call("game.add_note", { text });
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "scan_network",
+  "对当前连接节点执行 scan（等价终端 scan；把链接加入地图）。结果用 terminal_history 读",
+  {},
+  async () => {
+    const r = await call("game.scan");
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "probe_target",
+  "对当前连接节点执行 probe（等价终端 probe；端口/破解需求/代理/防火墙）。结果用 terminal_history 读",
+  {},
+  async () => {
+    const r = await call("game.probe");
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
+  "get_achievements",
+  "读取游戏内成就解锁记录（ProgressionFlags 里的 `<成就名>_Unlocked`；Steam 侧状态无法直接读取）",
+  {},
+  async () => {
+    const r = await call("achievements.list");
+    return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.tool(
   "os_memory",
   "读取目标机内存（DLC RamModule）：dataBlocks/commandsRun/fileFragments（含密码碎片）/images；无 DLC 或目标无内存时返回 null",
   { ip: z.string().optional().describe("目标 IP；省略则当前连接/本机") },
@@ -721,6 +812,61 @@ server.tool(
 // 排除：只读查询/状态类（get_state/read_file/terminal_history/mail/irc/board/events/registry/modtool_list/
 // get_flags/save_list/ping/hub_list/os_memory 等）——查询请直接调用对应工具，别塞进批量；
 // 进程/管道类特殊工具（launch_game/pipe_probe）同样排除。
+// 批量步骤的必填参数校验（避免绕过 zod 后静默写空内容等）
+const BATCH_REQUIRED = {
+  execute_command: ["cmd"], run_hack_script: ["script"], launch_exe: ["exeName"], run_action: ["xml"],
+  connect: ["ip"], open_port: ["port"], close_port: ["port"], kill_exe: ["pid"],
+  write_file: ["file", "content"], append_file: ["file", "content"], delete_file: ["file"],
+  move_file: ["file"], replace_in_file: ["file", "target", "replacement"],
+  solve_firewall: ["solution"], set_flag: ["name"], clear_flag: ["name"],
+  submit_mission: ["details"], hub_accept: ["id"], add_note: ["text"],
+  menu_load_extension_save: ["userFile", "username"],
+};
+
+/** 批量单步：与单工具行为保持一致（waitMs/快照/退出等待/菜单限制） */
+async function runBatchStep(tool, args) {
+  const required = BATCH_REQUIRED[tool];
+  if (required) {
+    for (const k of required) {
+      if (args?.[k] === undefined || args[k] === "") throw new Error(`missing required arg '${k}' for ${tool}`);
+    }
+  }
+  switch (tool) {
+    case "execute_command": {
+      const r = await call("game.execute_command", { cmd: args.cmd });
+      if (args.waitMs > 0) {
+        await new Promise((x) => setTimeout(x, args.waitMs));
+        const output = await call("terminal.history", { lines: 10 });
+        return { ...r, output };
+      }
+      return r;
+    }
+    case "save_game": {
+      const r = await call("game.save");
+      await new Promise((x) => setTimeout(x, 400));
+      return { ...r, snapshot: await takeSnapshot() };
+    }
+    case "exit_to_menu": {
+      const r = await call("game.exit_to_menu");
+      for (let i = 0; i < 20; i++) {
+        await new Promise((x) => setTimeout(x, 500));
+        try { await call("state.get", {}, 5000); } catch {
+          return { ...r, exited: true, waitedMs: (i + 1) * 500 };
+        }
+      }
+      return { ...r, exited: false };
+    }
+    case "menu_enter_extension":
+    case "menu_load_extension_save":
+      throw new Error(`${tool} only works while the game is in the main menu; do not batch it in an OS session`);
+    default: {
+      const method = TOOL_TO_METHOD[tool];
+      if (!method) throw new Error(`unsupported tool for batch: ${tool}`);
+      return await call(method, args);
+    }
+  }
+}
+
 const TOOL_TO_METHOD = {
   connect: "game.connect", disconnect: "game.disconnect", execute_command: "game.execute_command",
   run_hack_script: "game.run_hack_script", run_action: "game.run_action", launch_exe: "game.launch_exe",
@@ -729,6 +875,8 @@ const TOOL_TO_METHOD = {
   analyze_firewall: "firewall.analyze", solve_firewall: "firewall.solve",
   delete_file: "fs.delete", move_file: "fs.move", replace_in_file: "fs.replace",
   kill_exe: "process.kill",
+  reboot_computer: "game.reboot", set_cd_tray: "game.cd_tray", clear_terminal: "game.clear_terminal",
+  add_note: "game.add_note", scan_network: "game.scan", probe_target: "game.probe",
   set_flag: "flags.set", clear_flag: "flags.clear",
   save_game: "game.save", exit_to_menu: "game.exit_to_menu",
   submit_mission: "mission.submit", hub_accept: "hub.accept",
@@ -738,7 +886,7 @@ const TOOL_TO_METHOD = {
 
 server.tool(
   "run_batch",
-  "批量串行执行**游戏内指令/动作类**工具（不是多工具查询批量）。steps 数组，每步 { tool, args? }；支持 28 个动作类工具：execute_command/connect/disconnect/run_action/run_hack_script/launch_exe/write_file/append_file/delete_file/move_file/replace_in_file/open_port/close_port/take_admin/firewall_crack/analyze_firewall/solve_firewall/set_flag/clear_flag/save_game/exit_to_menu/submit_mission/hub_accept/shell_drive/terminal_type/kill_exe/menu_enter_extension/menu_load_extension_save。**只读查询类（get_state/get_processes/get_daemons/read_file/terminal_history/mail/irc/board/events/registry/modtool_list/get_flags/save_list/ping/hub_list/os_memory 等）不在批量——请直接调用对应工具**。默认任一步失败即中断；continueOnError=true 则失败记录后继续。每步桥接超时 8s。",
+  "批量串行执行**游戏内指令/动作类**工具（不是多工具查询批量）。steps 数组，每步 { tool, args? }；支持 34 个动作类工具：execute_command/connect/disconnect/run_action/run_hack_script/launch_exe/write_file/append_file/delete_file/move_file/replace_in_file/open_port/close_port/take_admin/firewall_crack/analyze_firewall/solve_firewall/set_flag/clear_flag/save_game/exit_to_menu/submit_mission/hub_accept/shell_drive/terminal_type/kill_exe/reboot_computer/set_cd_tray/clear_terminal/add_note/scan_network/probe_target/menu_enter_extension/menu_load_extension_save。批量内 execute_command 的 waitMs、save_game 的快照、exit_to_menu 的等待与单工具一致；menu_* 仅主菜单可用，OS 会话内批量会明确报错。**只读查询类（get_state/get_processes/get_daemons/read_file/terminal_history/mail/irc/board/events/registry/modtool_list/get_flags/save_list/ping/hub_list/os_memory 等）不在批量——请直接调用对应工具**。默认任一步失败即中断；continueOnError=true 则失败记录后继续。每步桥接超时 8s。",
   {
     steps: z.array(z.object({
       tool: z.string().describe("游戏内指令/动作类工具名（如 execute_command / connect / run_action / set_flag / terminal_type）"),
@@ -750,14 +898,13 @@ server.tool(
     const results = [];
     for (let i = 0; i < steps.length; i++) {
       const { tool, args = {} } = steps[i];
-      const method = TOOL_TO_METHOD[tool];
-      if (!method) {
+      if (!TOOL_TO_METHOD[tool] && tool !== "save_game" && tool !== "exit_to_menu") {
         results.push({ step: i, tool, ok: false, error: `unsupported tool for batch: ${tool}` });
         if (!continueOnError) break;
         continue;
       }
       try {
-        const r = await call(method, args);
+        const r = await runBatchStep(tool, args);
         results.push({ step: i, tool, ok: true, result: r });
       } catch (e) {
         results.push({ step: i, tool, ok: false, error: String(e.message || e) });
@@ -882,6 +1029,21 @@ function isGameRunning() {
   });
 }
 
+/** 用 PowerShell 取 Hacknet 进程 PID 列表（launch_game 返回真实 pid / 防双开复查） */
+function findGamePids() {
+  return new Promise((resolve) => {
+    try {
+      const p = spawn("powershell.exe",
+        ["-NoProfile", "-Command", "Get-Process Hacknet -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }"],
+        { windowsHide: true });
+      let out = "";
+      p.stdout.on("data", (d) => (out += d.toString()));
+      p.on("close", () => resolve(out.split(/\s+/).map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n) && n > 0)));
+      p.on("error", () => resolve([]));
+    } catch { resolve([]); }
+  });
+}
+
 /**
  * 后台自动进扩展（替代 -extstart 直进）：正常启动到主菜单 → 等 bridge 管道就绪 →
  * 调 menu.enter_extension（MenuExecutor 在主菜单阶段执行，插件真正加载）。
@@ -910,13 +1072,13 @@ function scheduleAutoEnterExtension(ext, { username, pass } = {}) {
       try {
         await ensureBridge();
         // 主菜单阶段 MenuExecutor 处理 menu.enter_extension；进扩展后 OS 会话接管
-        const r = await bridge.call("menu.enter_extension", { ext, username, pass }, 10000);
+        const r = await call("menu.enter_extension", { ext, username, pass }, 10000);
         if (r?.ok) {
           // 防假阳性：menu.enter_extension 返回 ok 不代表真进扩展（旧 bug：同名账号 AddUser false
           // 时游戏报 "Error auto-loading Extension" 但 bridge 仍返回 ok）——延迟 3s 验证 OS 会话
           await new Promise((r2) => setTimeout(r2, 3000));
           try {
-            const st = await bridge.call("state.get", {}, 5000);
+            const st = await call("state.get", {}, 5000);
             const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
             if (st?.thisComputerIP) {
               process.stderr.write(`[hnpf] 已自动进扩展 ${ext}（主菜单路径，验证通过，耗时 ${secs}s / ${probes} 次探测）\n`);
@@ -961,10 +1123,20 @@ server.tool(
         content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "游戏已在运行（Hacknet.exe 进程存在），请勿重复启动" }, null, 2) }],
       };
     }
+    // ext 目录先校验（过去是后台 fire-and-forget，工具已返回 ok 但实际进不去）
+    const exe = GAME_EXE;
+    const gameRoot = path.dirname(exe);
+    if (ext && !fs.existsSync(path.join(gameRoot, "Extensions", ext))) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ ok: false, reason: `扩展目录不存在: ${path.join(gameRoot, "Extensions", ext)}` }, null, 2),
+        }],
+      };
+    }
     // 注意：不再用 -extstart（跳主菜单 → 插件加载异常）；进扩展走主菜单 menu.enter_extension
     // 默认带调试参数（-enabledebug -enablefc，与 debugtest.bat 一致），debug=false 可关
     const args = debug === false ? [] : ["-enabledebug", "-enablefc"];
-    const exe = GAME_EXE;
     const exists = fs.existsSync(exe);
     if (!exists && !dryRun) {
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: `找不到游戏主程序: ${exe}（可用环境变量 HNPF_GAME 指定）` }, null, 2) }] };
@@ -985,7 +1157,8 @@ server.tool(
       const argList = args.length > 0
         ? `@(${args.map((a) => `"${a}"`).join(", ")})`
         : "@()";
-      const ps = `Start-Process -FilePath "${exe}" -ArgumentList ${argList} -WorkingDirectory "${path.dirname(exe)}" -PassThru | Out-Null`;
+      // -PassThru 输出游戏进程 Id（用于返回真实 pid，而不是 powershell 的 pid）
+      const ps = `$p = Start-Process -FilePath "${exe}" -ArgumentList ${argList} -WorkingDirectory "${path.dirname(exe)}" -PassThru; $p.Id`;
       // 实测（2026-08-18 DeepSeek 宿主）：spawn powershell 带 detached:true + windowsHide:true
       // + stdio:ignore 时，Start-Process **拉不起游戏**（无控制台 + CEF 空窗）——三者全去后正常
       // （powershell 是 node 子进程，Start-Process 创建的游戏进程独立存活，node 退出不影响）
@@ -994,16 +1167,18 @@ server.tool(
       });
       child.stderr?.on("data", (d) => process.stderr.write("[hnpf-console] " + d));
       modeNote = "带控制台启动（Start-Process，CEF 不冒空窗口，控制台显示游戏日志）";
-      // 兜底：Start-Process 未生效（沙箱/策略禁止）时自动回退直接 spawn；HN 加载快，15s 内未起即回退
+      // 兜底：Start-Process 未生效（沙箱/策略禁止）时自动回退直接 spawn；HN 加载快，15s 内未起即回退。
+      // 回退前先复查进程列表（防止"其实已启动、只是检测慢"时双开）
       setTimeout(() => {
-        isGameRunning().then((running) => {
-          if (!running) {
-            process.stderr.write("[hnpf] Start-Process 未拉起游戏，回退直接 spawn\n");
-            const fb = spawn(exe, args, { detached: true, stdio: ["ignore", "pipe", "pipe"], cwd: path.dirname(exe) });
-            fb.stdout?.on("data", () => { }); fb.stderr?.on("data", () => { });
-            fb.unref();
-          }
-        });
+        (async () => {
+          if (await isGameRunning()) return;
+          const pids = await findGamePids();
+          if (pids.length > 0) return;
+          process.stderr.write("[hnpf] Start-Process 未拉起游戏，回退直接 spawn\n");
+          const fb = spawn(exe, args, { detached: true, stdio: ["ignore", "pipe", "pipe"], cwd: path.dirname(exe) });
+          fb.stdout?.on("data", () => { }); fb.stderr?.on("data", () => { });
+          fb.unref();
+        })();
       }, 15000);
     } else {
       child = spawn(exe, args, { detached: true, stdio: ["ignore", "pipe", "pipe"], cwd: path.dirname(exe) });
@@ -1014,11 +1189,29 @@ server.tool(
     child.stdout?.on("data", () => { /* 丢弃，防缓冲区满 */ });
     child.stderr?.on("data", () => { });
     child.unref();
+    // 尽量拿真实游戏 pid：console 模式先解析 PowerShell 输出，其它模式查进程
+    let gamePid = null;
+    if (useConsole) {
+      const out = await Promise.race([
+        new Promise((resolve) => {
+          let buf = "";
+          child.stdout?.on("data", (d) => { buf += d.toString(); });
+          child.on("close", () => resolve(buf));
+        }),
+        new Promise((resolve) => setTimeout(() => resolve(""), 3000)),
+      ]);
+      const m = String(out).match(/^\s*(\d+)/m);
+      if (m) gamePid = parseInt(m[1], 10);
+    }
+    if (!gamePid) {
+      const pids = await findGamePids();
+      gamePid = pids[0] ?? null;
+    }
     const note = ext
       ? `游戏正常启动；后台自动进扩展 ${ext}（主菜单路径，通常 5~15s，冷启动最多 60s，插件正常加载）。${modeNote}`
       : `游戏启动中，bridge 通常 5~15s 内连上（冷启动最多 60s）。${modeNote}`;
     if (ext) scheduleAutoEnterExtension(ext, { username });
-    return { content: [{ type: "text", text: JSON.stringify({ ok: true, pid: child.pid, exe, args, ext: ext || null, note }, null, 2) }] };
+    return { content: [{ type: "text", text: JSON.stringify({ ok: true, pid: gamePid, launcherPid: child.pid, exe, args, ext: ext || null, note }, null, 2) }] };
   }
 );
 
@@ -1039,9 +1232,10 @@ server.tool(
       try {
         await probe.connect();
         results.push({ pipe: name, online: true });
-        probe.close();
       } catch {
         results.push({ pipe: name, online: false });
+      } finally {
+        try { probe.close(); } catch { /* 忽略 */ }
       }
     }
     return { content: [{ type: "text", text: JSON.stringify({ results }, null, 2) }] };

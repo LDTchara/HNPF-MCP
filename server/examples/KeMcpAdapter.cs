@@ -1,72 +1,64 @@
 // ============================================================================
-// KE 适配器示例（第三层抽象：模组专属内存态暴露给 AI）
+// L3 适配器最小模板：把模组独有状态暴露给 MCP（不引用模组程序集，纯反射软依赖）
 // ----------------------------------------------------------------------------
-// 使用方式：
-//   1. KE 项目添加对 hnpf-mcp-bridge 程序集（HnpfMcpBridge.dll）的引用
-//   2. 本文件加入 KE 项目（或放到任意被 BepInEx 加载的程序集里）
-//   3. 编译后，bridge 在 OSLoaded 时自动扫描 [McpTool] 并注册，
-//      MCP 侧用 modtool_list / modtool_call 即可调用 —— 无需改 MCP server
-// ----------------------------------------------------------------------------
-// 支持的方法签名：无参 或 单个 Dictionary<string, object> 参数。
-// 返回值：object（bridge 自动 JSON 序列化）或 string。
+// 用法：
+//   1. 在任意 BepInEx 插件程序集（推荐独立"连接器"插件）里加一个静态类；
+//   2. 给静态方法加 [McpTool("名字", "描述")]；
+//      方法签名只能是「无参」或「单个 Dictionary<string, object> 参数」；
+//   3. 编译产物放到扩展的 Plugins/ 或 BepInEx/plugins/；
+//   4. bridge 在 OSLoaded / 进扩展时反射扫描注册，MCP 侧用 modtool_list /
+//      modtool_call 调用（返回值包在 {ok:true, tool, result} 下）。
+//
+// 注意：连接器不要声明 [BepInDependency]——bridge 是全局插件，扩展模式依赖校验
+// 看不到它，会误报 missing dependencies；模组类型用简单名 + 反射按需解析即可。
 // ============================================================================
 
-using HnpfMcpBridge;                       // McpToolAttribute
-using KernelExtensions.Executables;        // CustomTrialExe
-using KernelExtensions.Modules;            // PhaseSwiftManager / VMInfectionManager
-using KernelExtensions.Utility;            // KEConfigLoader
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+using HnpfMcpBridge;   // [McpTool]
 
-namespace KernelExtensions.Mcp;
+namespace MyMod.Mcp;
 
-public static class KeMcpAdapter
+/// <summary>示例适配器：替换 MyModManager / 字段名为你自己模组的类型与成员。</summary>
+internal static class MyModAdapters
 {
-    [McpTool("ke.phaseswift.state", "PhaseSwift 运行时状态（运行中/场景/音乐相位/主题/已发现节点/黑名单）")]
-    public static object PhaseSwiftState(Dictionary<string, object> p) => new Dictionary<string, object>
-    {
-        ["running"] = PhaseSwiftManager.IsRunning,
-        ["scene"] = PhaseSwiftManager.CurrentScene,
-        ["musicPhase"] = PhaseSwiftManager.CurrentMusicPhase,
-        ["theme"] = PhaseSwiftManager.DefaultTheme,
-        ["discovered"] = PhaseSwiftManager.GetSceneDiscoveredNodes(),
-        ["blocked"] = PhaseSwiftManager.GetRuntimeBlockedNodes(),
-    };
+    private const string ModName = "MyMod";
 
-    [McpTool("ke.customtrial.state", "当前 CustomTrial 试炼（配置名/已删除节点）")]
-    public static object CustomTrialState(Dictionary<string, object> p)
+    [McpTool("mymod.state", "MyMod 运行状态（示例）")]
+    public static object State(Dictionary<string, object> p)
     {
-        var trial = CustomTrialExe.CurrentInstance;
-        return new Dictionary<string, object>
+        var t = FindType("MyModManager");
+        if (t == null) return ModMissing("MyModManager");
+        try
         {
-            ["config"] = trial?.CurrentConfigName,
-            ["deletedNodes"] = trial?.GetDeletedNodeIndices(),
-        };
-    }
-
-    [McpTool("ke.vm.state", "VM 感染模式与检查条件")]
-    public static object VmState(Dictionary<string, object> p) =>
-        VMInfectionManager.CurrentConfig != null
-            ? (object)new Dictionary<string, object>
+            return new Dictionary<string, object>
             {
-                ["mode"] = VMInfectionManager.CurrentConfig.Mode.ToString(),
-                ["checkFilePath"] = VMInfectionManager.CurrentConfig.CheckFilePath,
-            }
-            : new Dictionary<string, object> { ["mode"] = "none" };
-
-    [McpTool("ke.config.get", "读取 KE-Config.xml 配置")]
-    public static object KeConfig(Dictionary<string, object> p) => new Dictionary<string, object>
-    {
-        ["debug"] = KEConfigLoader.Debug,
-        ["skipVanillaIRCLogs"] = KEConfigLoader.SkipVanillaIRCLogs,
-        ["customImages"] = KEConfigLoader.CustomImages,
-    };
-
-    // 带参数示例（如按名字查 Flag）：
-    [McpTool("ke.flag.find", "按前缀查找 Flag（如 PhaseSwift_）")]
-    public static object FlagFind(Dictionary<string, object> p)
-    {
-        var prefix = p.TryGetValue("prefix", out var v) ? v?.ToString() : "";
-        var os = Hacknet.OS.currentInstance;
-        if (os?.Flags == null || string.IsNullOrEmpty(prefix)) return new Dictionary<string, object> { ["found"] = false };
-        return new Dictionary<string, object> { ["flag"] = os.Flags.GetFlagStartingWith(prefix) };
+                ["running"] = t.GetField("IsRunning", BindingFlags.Public | BindingFlags.Static)?.GetValue(null),
+                ["scene"] = t.GetField("CurrentScene", BindingFlags.Public | BindingFlags.Static)?.GetValue(null),
+                ["config"] = t.GetField("Config", BindingFlags.Public | BindingFlags.Static)?.GetValue(null)?.ToString(),
+            };
+        }
+        catch (Exception e)
+        {
+            return new Dictionary<string, object> { ["error"] = e.Message };
+        }
     }
+
+    private static Type FindType(string simpleName)
+    {
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            Type[] types;
+            try { types = asm.GetTypes(); } catch { continue; }
+            foreach (var t in types)
+                if (t.Name == simpleName) return t;
+        }
+        return null;
+    }
+
+    private static object ModMissing(string typeName) => new Dictionary<string, object>
+    {
+        ["error"] = $"{ModName} 未加载或类型缺失（需要类型: {typeName}）",
+    };
 }

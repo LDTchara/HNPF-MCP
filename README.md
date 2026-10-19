@@ -1,16 +1,18 @@
 # HNPF-MCP
 
+> 当前版本 **0.2.0**（bridge/server；连接器 0.4.0）。变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 **Hacknet + Pathfinder 的 MCP 服务器**——让任何 MCP 宿主（Claude / DeepSeek / WorkBuddy / Cursor…）通过标准 MCP 协议直接操控 Hacknet 游戏：读取状态、执行命令、驱动模组（KE 等）、管理存档与生命周期。
 
 ```
-MCP 宿主（AI） ⇄ server（Node.js MCP Server，56 工具） ⇄ bridge（BepInEx 插件，NamedPipe） ⇄ Hacknet/Pathfinder
+MCP 宿主（AI） ⇄ server（Node.js MCP Server，63 工具） ⇄ bridge（BepInEx 插件，NamedPipe） ⇄ Hacknet/Pathfinder
                                                               ↕ [McpTool] 反射发现
                                                         connector（L3 模组连接器，ke.*）
 ```
 
 ## 特性
 
-- **56 个 MCP 工具**：状态/文件/命令/端口/Flag/邮件/IRC/论坛/任务板/进程/daemon/文件编辑/防火墙/批量/生命周期全覆盖
+- **63 个 MCP 工具**：状态/文件/命令/端口/Flag/邮件/IRC/论坛/任务板/进程/daemon/文件编辑/防火墙/原版小操作/批量/生命周期全覆盖
 - **三层抽象**：L1 游戏通用（bridge）→ L2 Pathfinder 注册表泛化（run_action/registry）→ L3 模组连接器（`[McpTool]` 零注册反射发现）
 - **生命周期自动化**：`launch_game` 启动+主菜单自动进扩展（免 -extstart 的插件加载异常）、`exit_to_menu` 游戏内切账号（无需重启）、`menu_load_extension_save` 真读档恢复进度
 - **工程化**：事件流、存档快照（snapshots/）、token 握手鉴权、只读模式/命令白名单（bridge Safety，写方法在桥接入口拦截）、审计日志、多开管道自动改名 + `pipe_probe` 探测
@@ -57,7 +59,7 @@ execute_command { cmd: "help" }                    # 终端执行命令
 
 完整工具/命令参考见 **[docs/使用指南.md](docs/使用指南.md)**；终端指令规范见 **[docs/HN命令速查.md](docs/HN命令速查.md)**。
 
-## 工具概览（56 个）
+## 工具概览（63 个）
 
 | 分类 | 工具 |
 |---|---|
@@ -71,8 +73,9 @@ execute_command { cmd: "help" }                    # 终端执行命令
 | 任务/情报（G 节） | `submit_mission` `hub_list` `hub_accept` `os_memory` |
 | 交互（G 节） | `shell_drive` `terminal_type` |
 | 进程/daemon | `get_processes` `kill_exe` `get_daemons` |
-| 批量/生命周期 | `run_batch`（28 个动作类工具批量）`save_game`（自动快照）`exit_to_menu` `pipe_probe` |
-| 模组专属 | `modtool_list` `modtool_call` + 连接器自动注册（如 KE 的 `ke.*` **11 个**） |
+| 原版小操作 | `reboot_computer` `set_cd_tray` `clear_terminal` `add_note` `scan_network` `probe_target` `get_achievements` |
+| 批量/生命周期 | `run_batch`（34 个动作类工具批量）`save_game`（自动快照）`exit_to_menu` `pipe_probe` |
+| 模组专属 | `modtool_list` `modtool_call` + 连接器自动注册（如 KE 的 `ke.*` **13 个**） |
 | 游戏启动/主菜单 | `launch_game`（自动进扩展）`menu_enter_extension` `menu_load_extension_save` |
 
 ## 测试
@@ -82,6 +85,7 @@ cd server
 node test/e2e.mjs          # 假 bridge 全链路（含新增进程/daemon/文件/防火墙工具）
 node test/smoke.mjs        # 工具清单冒烟（离线错误断言 + resources URI）
 node test/auth-check.mjs   # token 握手回归（fake bridge）
+node test/multiclient-check.mjs  # 多客户端并发（真机，需游戏运行）
 node test/real-all.mjs     # 真机回归（19 项，需游戏在 KE 扩展会话）
 node test/real-verify.mjs  # 真机验证新增能力（RAM/进程/文件/防火墙/resources/ReadOnly）
 ```
@@ -91,8 +95,8 @@ node test/real-verify.mjs  # 真机验证新增能力（RAM/进程/文件/防火
 ```
 HNPF-MCP/
 ├── bridge/         L1 BepInEx 全局插件（PipeServer/Executor/MenuExecutor/Events/...）
-├── server/         Node.js MCP Server（56 工具 + Prompts + Resources）
-├── connector/      L3 模组连接器实际插件（无 BepInDependency 反射软依赖，[McpTool] 发现，11 个 ke.*）
+├── server/         Node.js MCP Server（63 工具 + Prompts + Resources）
+├── connector/      L3 模组连接器实际插件（无 BepInDependency 反射软依赖，[McpTool] 发现，13 个 ke.*）
 ├── docs/           使用文档（使用指南 / HN命令速查）
 ├── deploy.ps1      一键部署脚本
 └── snapshots/      存档快照（save_game 自动生成，保留 20 份）

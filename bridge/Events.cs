@@ -19,7 +19,8 @@ public static class EventBuffer
                 ["id"] = NextId++,
                 ["event"] = name,
                 ["data"] = data,
-                ["t"] = DateTime.UtcNow.ToString("HH:mm:ss")
+                ["t"] = DateTime.UtcNow.ToString("HH:mm:ss"),
+                ["ts"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
             });
             if (Events.Count > Max) Events.RemoveRange(0, Events.Count - Max);
         }

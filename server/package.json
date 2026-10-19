@@ -1,6 +1,6 @@
 {
   "name": "hnpf-mcp-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for Hacknet + Pathfinder (HNPF). Connects to the in-game hnpf-mcp-bridge via NamedPipe.",
   "type": "module",
   "main": "src/index.js",
@@ -13,7 +13,8 @@
     "test:e2e": "node test/e2e.mjs",
     "test:auth": "node test/auth-check.mjs",
     "test:real-all": "node test/real-all.mjs",
-    "test:real-verify": "node test/real-verify.mjs"
+    "test:real-verify": "node test/real-verify.mjs",
+    "test:multiclient": "node test/multiclient-check.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

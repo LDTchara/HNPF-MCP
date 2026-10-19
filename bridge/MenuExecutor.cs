@@ -24,13 +24,15 @@ public static class MenuExecutor
         var pipe = HnpfMcpBridgePlugin.Pipe;
         if (pipe == null) return;
 
-        // 主菜单每帧消费少量请求（主菜单无重负载，预算 4 足够）
+        // 主菜单每帧消费少量请求（主菜单无重负载，预算 4 足够；多客户端：响应发回来源连接）
         int budget = 4;
-        while (budget-- > 0 && pipe.TryDequeueRequest(out var req))
+        while (budget-- > 0 && pipe.TryDequeueRequest(out var queued))
         {
+            var req = queued.Request;
             if (req.Method != "menu.enter_extension" && req.Method != "menu.load_extension_save")
             {
-                pipe.PushResponse(RpcResponse.Fail(req, 400, "not available in main menu (start a game session first)").ToJsonLine());
+                pipe.PushResponse(RpcResponse.Fail(req, 400, "not available in main menu (start a game session first)").ToJsonLine(),
+                    queued.Client);
                 continue;
             }
             try
@@ -38,12 +40,12 @@ public static class MenuExecutor
                 var resp = req.Method == "menu.enter_extension"
                     ? EnterExtension(__instance, req.Params)
                     : LoadExtensionSave(__instance, req.Params);
-                pipe.PushResponse(RpcResponse.Ok(req, resp).ToJsonLine());
+                pipe.PushResponse(RpcResponse.Ok(req, resp).ToJsonLine(), queued.Client);
             }
             catch (Exception ex)
             {
                 HnpfMcpBridgePlugin.LogWarn($"menu '{req.Method}' failed: {ex}");
-                pipe.PushResponse(RpcResponse.Fail(req, 500, ex.ToString()).ToJsonLine());
+                pipe.PushResponse(RpcResponse.Fail(req, 500, ex.ToString()).ToJsonLine(), queued.Client);
             }
         }
     }
@@ -223,7 +225,7 @@ public static class MenuExecutor
                 }
                 catch { }
             }
-            HnpfMcpBridgePlugin.LogInfo($"[{HnpfMcpBridgePlugin.ModName}] 扩展插件 DLL 兜底加载 x{loaded}（已加载跳过 x{skipped}，字节加载不锁文件）（{pluginsDir}）");
+            HnpfMcpBridgePlugin.LogInfo($"[{HnpfMcpBridgePlugin.ModName}] fallback-loaded extension plugin DLLs x{loaded} (skipped already-loaded x{skipped}; byte-load does not lock files) ({pluginsDir})");
             try { McpModuleScanner.Scan(); } catch { }
         }
         catch { }

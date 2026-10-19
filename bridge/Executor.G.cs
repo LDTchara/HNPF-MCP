@@ -48,8 +48,20 @@ public static partial class Executor
             if (GetFieldOrProp(m, "goals") is IEnumerable goals)
                 foreach (var g in goals)
                 {
-                    try { if (g != null && !(bool)(g.GetType().GetMethod("isComplete", new[] { typeof(List<string>) })?.Invoke(g, new object[] { list }) ?? false)) bad.Add(g.GetType().Name); }
-                    catch { bad.Add(g?.GetType().Name ?? "?"); }
+                    if (g == null) continue;
+                    try
+                    {
+                        bool done;
+                        var mi = g.GetType().GetMethod("isComplete", new[] { typeof(List<string>) });
+                        if (mi != null) done = (bool)mi.Invoke(g, new object[] { list });
+                        else
+                        {
+                            var mi0 = g.GetType().GetMethod("isComplete", Type.EmptyTypes);
+                            done = mi0 == null || (bool)mi0.Invoke(g, null);   // 无判定方法时不误报
+                        }
+                        if (!done) bad.Add(g.GetType().Name);
+                    }
+                    catch { /* 判定失败不误报 */ }
                 }
             throw new ArgumentException("mission not complete with supplied details; incomplete goals: " +
                 (bad.Count > 0 ? string.Join(", ", bad) : "none (sender verification likely failed)"));

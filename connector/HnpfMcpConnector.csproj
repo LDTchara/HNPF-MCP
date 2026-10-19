@@ -13,9 +13,9 @@
     <Description>Generic L3 connector: exposes mod runtime state to HNPF-MCP via [McpTool], using runtime reflection (soft dependency — no compile-time mod references). Mods stay untouched.</Description>
     <Company>LDTchara</Company>
     <Product>HnpfMcpConnector</Product>
-    <Version>0.1.0</Version>
-    <FileVersion>0.1.0</FileVersion>
-    <AssemblyVersion>0.1.0</AssemblyVersion>
+    <Version>0.4.0</Version>
+    <FileVersion>0.4.0</FileVersion>
+    <AssemblyVersion>0.4.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>

@@ -1,182 +1,296 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO.Pipes;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 
 namespace HnpfMcpBridge;
 
 /// <summary>
-/// NamedPipe 服务端。仅负责收发（JSON 行协议），不触碰游戏状态。
-/// 收到的请求进入 _inbox，由主线程泵消费；响应从 _outbox 写回。
+/// NamedPipe 服务：每行一条 JSON 请求/响应；支持多客户端并发（每连接独立鉴权与发送队列），
+/// 游戏状态读写仍统一由 Executor / MenuExecutor 在主线程消费。
+///
+/// 管道安全：ACL 限制为当前用户 + SYSTEM（默认 DACL 允许任意本机进程连接）。
 /// </summary>
-public class PipeServer : IDisposable
+public sealed class PipeServer
 {
     public const string DefaultPipeName = "hnpf-mcp-bridge";
+    private const int MaxClients = 8;
 
-    private readonly ConcurrentQueue<RpcRequest> _inbox = new();
-    private readonly ConcurrentQueue<string> _outbox = new();
-    private readonly ManualResetEventSlim _outboxSignal = new(false);
-
-    private string _pipeName;
+    private readonly string _baseName;
     private readonly string _token;
-    private NamedPipeServerStream _pipe;
+    private string _pipeName;
     private CancellationTokenSource _cts;
     private bool _fallbackApplied;
-    private volatile string _effectiveName;
+
+    private readonly ConcurrentDictionary<Client, byte> _clients = new();
+    private readonly ConcurrentQueue<QueuedRequest> _inbox = new();
 
     public PipeServer(string pipeName, string token)
     {
+        _baseName = pipeName;
         _pipeName = pipeName;
-        _token = token;
-        _effectiveName = pipeName;
+        _token = token ?? "";
     }
 
-    /// <summary>当前实际监听的管道名（默认名被占用自动改 {name}-{pid} 后返回新名）。</summary>
-    public string EffectivePipeName => _effectiveName;
-
-    public bool TryDequeueRequest(out RpcRequest req) => _inbox.TryDequeue(out req);
-
-    public void PushResponse(string jsonLine) { _outbox.Enqueue(jsonLine); _outboxSignal.Set(); }
+    public string EffectivePipeName => _pipeName;
 
     public void Start()
     {
         _cts = new CancellationTokenSource();
-        // 接收线程（长驻）
-        Task.Run(ListenLoop);
-        // 发送线程（长驻）
-        Task.Run(SendLoop);
+        Task.Run(() => ListenLoopAsync(_cts.Token));
     }
 
     public void Stop()
     {
-        _cts?.Cancel();
-        try { _pipe?.Dispose(); } catch { }
+        try { _cts?.Cancel(); } catch { }
+        foreach (var c in _clients.Keys) { try { c.Close(); } catch { } }
+        _clients.Clear();
+        _cts = null;
     }
 
-    private async Task ListenLoop()
+    // ---------------- 主线程泵接口 ----------------
+
+    public bool TryDequeueRequest(out QueuedRequest request) => _inbox.TryDequeue(out request);
+
+    /// <summary>把响应推回发请求的那个客户端。</summary>
+    public void PushResponse(string line, Client client) => client?.Send(line);
+
+    /// <summary>广播事件给所有已连接客户端。</summary>
+    public void Broadcast(string line)
     {
-        while (!_cts.IsCancellationRequested)
+        foreach (var c in _clients.Keys) { try { c.Send(line); } catch { } }
+    }
+
+    // ---------------- 监听循环 ----------------
+
+    private async Task ListenLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
         {
+            NamedPipeServerStream pipe = null;
             try
             {
-                _pipe = new NamedPipeServerStream(
-                    _pipeName,
-                    PipeDirection.InOut,
-                    1,
-                    PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous);
-
-                HnpfMcpBridgePlugin.LogInfo($"Pipe listening: \\\\.\\pipe\\{_pipeName}");
-                await _pipe.WaitForConnectionAsync(_cts.Token);
-                _authenticated = false;   // 每条新连接都重新握手（多客户端重连）
-
-                using var reader = new StreamReader(_pipe, Encoding.UTF8);
-                string line;
-                while (!_cts.IsCancellationRequested && (line = await reader.ReadLineAsync()) != null)
-                {
-                    if (line.Trim().Length == 0) continue;
-                    try
-                    {
-                        var req = TryParse(line);
-                        if (req == null) continue;             // 无效消息，忽略
-                        if (!Authenticate(req)) break;         // token 不符：已回 401，断开本条连接但继续监听
-                        if (req.Method == "auth") continue;    // 握手请求不回主线程（否则会报 unknown method）
-                        _inbox.Enqueue(req);
-                    }
-                    catch (Exception e)
-                    {
-                        HnpfMcpBridgePlugin.LogWarn($"Bad request line: {e.Message}");
-                    }
-                }
+                pipe = CreatePipe();
+                await pipe.WaitForConnectionAsync(ct);
+                var client = new Client(this, pipe, _token);
+                _clients.TryAdd(client, 0);
+                _ = Task.Run(() => client.RunAsync(ct), ct);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception e)
             {
-                // B3 多开：默认管道被占用（已有实例在监听）时，自动改用 {pipeName}-{pid}，
-                // 避免无限刷屏重试；server 可用 HNPF_PIPE 指定或读 ping 的 pipe 字段连接
-                if (!_fallbackApplied)
+                try { pipe?.Dispose(); } catch { }
+                if (_clients.IsEmpty && !_fallbackApplied && IsNameConflict(e))
                 {
                     _fallbackApplied = true;
-                    var pid = System.Diagnostics.Process.GetCurrentProcess().Id;
+                    var pid = Process.GetCurrentProcess().Id;
                     var old = _pipeName;
-                    _pipeName = _pipeName + "-" + pid;
-                    _effectiveName = _pipeName;
-                    HnpfMcpBridgePlugin.LogWarn($"pipe '{old}' 被占用（可能已有实例），自动改用 {_pipeName}（多开模式）");
+                    _pipeName = _baseName + "-" + pid;
+                    HnpfMcpBridgePlugin.LogWarn($"pipe '{old}' unavailable (likely in use); switching to '{_pipeName}' (multi-instance mode)");
                 }
                 else
                 {
-                    HnpfMcpBridgePlugin.LogWarn($"Pipe listen error: {e.Message}; re-listen in 1s");
+                    HnpfMcpBridgePlugin.LogWarn($"Pipe listen error: {e.Message}; retry in 1s");
                 }
-                try { await Task.Delay(1000, _cts.Token); } catch { break; }
+                try { await Task.Delay(1000, ct); } catch { break; }
             }
         }
     }
 
-    private async Task SendLoop()
+    /// <summary>只有"名字被占用"才触发自动改名（资源耗尽等异常不改名，避免把合法名字改坏）。</summary>
+    private static bool IsNameConflict(Exception e)
     {
-        while (!_cts.IsCancellationRequested)
+        if (e is not IOException) return false;
+        var msg = e.Message ?? "";
+        // .NET Framework 4.7.2 的 string.Contains 没有 StringComparison 重载
+        return msg.IndexOf("pipe", StringComparison.OrdinalIgnoreCase) >= 0
+            || msg.IndexOf("占用", StringComparison.Ordinal) >= 0
+            || msg.IndexOf("in use", StringComparison.OrdinalIgnoreCase) >= 0
+            || msg.IndexOf("already exists", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private NamedPipeServerStream CreatePipe()
+    {
+        var security = TryBuildPipeSecurity();
+        if (security != null)
         {
-            _outboxSignal.Wait(_cts.Token);
-            _outboxSignal.Reset();
-            while (_outbox.TryDequeue(out var line))
+            try
             {
-                try
+                return new NamedPipeServerStream(_pipeName, PipeDirection.InOut, MaxClients,
+                    PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 64 * 1024, 64 * 1024, security);
+            }
+            catch (Exception e)
+            {
+                HnpfMcpBridgePlugin.LogWarn($"pipe ACL apply failed; falling back to default security: {e.Message}");
+            }
+        }
+        return new NamedPipeServerStream(_pipeName, PipeDirection.InOut, MaxClients,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 64 * 1024, 64 * 1024);
+    }
+
+    /// <summary>管道 ACL：仅当前用户 + SYSTEM 可连接（默认 NamedPipe DACL 允许任意本机进程）。</summary>
+    private static PipeSecurity TryBuildPipeSecurity()
+    {
+        try
+        {
+            var security = new PipeSecurity();
+            using var identity = WindowsIdentity.GetCurrent();
+            var user = identity.User;
+            if (user == null) return null;
+            security.AddAccessRule(new PipeAccessRule(user, PipeAccessRights.FullControl, AccessControlType.Allow));
+            var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+            security.AddAccessRule(new PipeAccessRule(system, PipeAccessRights.FullControl, AccessControlType.Allow));
+            return security;
+        }
+        catch (Exception e)
+        {
+            HnpfMcpBridgePlugin.LogWarn($"cannot build pipe ACL (default security will be used): {e.Message}");
+            return null;
+        }
+    }
+
+    // ---------------- 请求 / 连接 ----------------
+
+    /// <summary>一次请求（带来源客户端，用于把响应发回正确连接）。</summary>
+    public sealed class QueuedRequest
+    {
+        public RpcRequest Request;
+        public Client Client;
+    }
+
+    /// <summary>单个客户端连接：独立鉴权状态 + 独立发送队列。</summary>
+    public sealed class Client
+    {
+        private readonly PipeServer _owner;
+        private readonly NamedPipeServerStream _pipe;
+        private readonly string _token;
+        private readonly ConcurrentQueue<string> _outbox = new();
+        private readonly SemaphoreSlim _signal = new(0);
+        private bool _authenticated;
+        private int _closed;
+
+        public Client(PipeServer owner, NamedPipeServerStream pipe, string token)
+        {
+            _owner = owner;
+            _pipe = pipe;
+            _token = token ?? "";
+        }
+
+        public async Task RunAsync(CancellationToken ct)
+        {
+            _ = Task.Run(() => SendLoopAsync(ct), ct);
+            try
+            {
+                using var reader = new StreamReader(_pipe, Encoding.UTF8);
+                while (!ct.IsCancellationRequested)
                 {
-                    if (_pipe != null && _pipe.IsConnected)
+                    string line;
+                    try { line = await reader.ReadLineAsync(); }
+                    catch { break; }
+                    if (line == null) break;
+                    if (line.Trim().Length == 0) continue;
+
+                    RpcRequest req;
+                    try { req = ParseRequest(line); }
+                    catch (Exception e)
                     {
-                        var bytes = Encoding.UTF8.GetBytes(line + "\n");
-                        await _pipe.WriteAsync(bytes, 0, bytes.Length, _cts.Token);
-                        await _pipe.FlushAsync(_cts.Token);
+                        HnpfMcpBridgePlugin.LogWarn($"Bad request line: {e.Message}");
+                        Send(ErrorLine(0, 500, "bad request: " + e.Message));
+                        continue;
+                    }
+                    if (req == null) continue;
+
+                    // token 鉴权：每条连接首次请求必须是正确 auth；通过后本连接不再逐条校验
+                    if (!string.IsNullOrEmpty(_token) && !_authenticated)
+                    {
+                        if (req.Method == "auth"
+                            && req.Params.TryGetValue("token", out var t)
+                            && t?.ToString() == _token)
+                        {
+                            _authenticated = true;
+                            Send(ResultLine(req.Id ?? 0,
+                                new Dictionary<string, object> { ["ok"] = true, ["authenticated"] = true }));
+                            continue;
+                        }
+                        Send(ErrorLine(req.Id ?? 0, 401, "unauthorized"));
+                        // 给发送线程一点时间把 401 冲出去，再断开（否则客户端只看到 pipe closed）
+                        try { await Task.Delay(200); } catch { }
+                        break;   // 断开本条连接，但监听循环继续
+                    }
+                    if (req.Method == "auth") continue;   // 已认证后的重复 auth 忽略
+                    _owner._inbox.Enqueue(new QueuedRequest { Request = req, Client = this });
+                }
+            }
+            catch (Exception e) { HnpfMcpBridgePlugin.LogWarn($"client error: {e.Message}"); }
+            finally { Close(); }
+        }
+
+        private async Task SendLoopAsync(CancellationToken ct)
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    await _signal.WaitAsync(ct);
+                    while (_outbox.TryDequeue(out var line))
+                    {
+                        try
+                        {
+                            if (_pipe.IsConnected)
+                            {
+                                var bytes = Encoding.UTF8.GetBytes(line + "\n");
+                                await _pipe.WriteAsync(bytes, 0, bytes.Length, ct);
+                                await _pipe.FlushAsync(ct);
+                            }
+                        }
+                        catch { return; }
                     }
                 }
-                catch { /* 连接断开则丢弃剩余 */ }
             }
+            catch (OperationCanceledException) { }
+            catch { }
         }
-    }
 
-    private RpcRequest TryParse(string line)
-    {
-        var obj = JsonRpc.DeserializeObj(line);
-        if (obj == null || !obj.ContainsKey("method")) return null;
-
-        var req = new RpcRequest
+        public void Send(string line)
         {
-            Method = obj["method"]?.ToString(),
-            Params = obj.ContainsKey("params") && obj["params"] is Dictionary<string, object> p ? p : new Dictionary<string, object>()
-        };
-        if (obj.ContainsKey("id"))
-            req.Id = Convert.ToInt64(obj["id"]);
-        return req;
-    }
+            if (_closed != 0 || line == null) return;
+            _outbox.Enqueue(line);
+            try { _signal.Release(); } catch (SemaphoreFullException) { } catch { }
+        }
 
-    private bool _authenticated;
-
-    /// <summary>
-    /// 握手：配置了 token 时，**连接上的首个请求**必须是正确的 auth；通过后该连接后续请求不再校验。
-    /// 失败回 401 并由调用方断开本条连接（不退出监听循环）。
-    /// </summary>
-    private bool Authenticate(RpcRequest req)
-    {
-        if (string.IsNullOrEmpty(_token)) return true;
-        if (_authenticated) return true;
-        if (req.Method == "auth"
-            && req.Params.TryGetValue("token", out var t)
-            && t?.ToString() == _token)
+        public void Close()
         {
-            _authenticated = true;
-            PushResponse(JsonRpc.Serialize(new Dictionary<string, object>
+            if (Interlocked.Exchange(ref _closed, 1) != 0) return;
+            _owner._clients.TryRemove(this, out _);
+            try { _pipe.Dispose(); } catch { }
+            try { _signal.Release(); } catch { }
+        }
+
+        private static RpcRequest ParseRequest(string line)
+        {
+            var obj = JsonRpc.DeserializeObj(line);
+            if (obj == null || !obj.ContainsKey("method")) return null;
+            var req = new RpcRequest
             {
-                ["id"] = req.Id ?? 0,
-                ["result"] = new Dictionary<string, object> { ["ok"] = true, ["authenticated"] = true }
-            }));
-            return true;
+                Method = obj["method"]?.ToString(),
+                Params = obj.ContainsKey("params") && obj["params"] is Dictionary<string, object> p
+                    ? p
+                    : new Dictionary<string, object>()
+            };
+            if (obj.ContainsKey("id")) req.Id = Convert.ToInt64(obj["id"]);
+            return req;
         }
-        PushResponse(JsonRpc.Serialize(new Dictionary<string, object>
-        {
-            ["id"] = req.Id ?? 0,
-            ["error"] = new Dictionary<string, object> { ["code"] = 401, ["message"] = "unauthorized" }
-        }));
-        return false;
-    }
 
-    public void Dispose() => Stop();
+        private static string ResultLine(long id, object result) =>
+            JsonRpc.Serialize(new Dictionary<string, object> { ["id"] = id, ["result"] = result });
+
+        private static string ErrorLine(long id, int code, string message) =>
+            JsonRpc.Serialize(new Dictionary<string, object>
+            {
+                ["id"] = id,
+                ["error"] = new Dictionary<string, object> { ["code"] = code, ["message"] = message }
+            });
+    }
 }

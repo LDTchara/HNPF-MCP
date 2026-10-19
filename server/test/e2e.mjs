@@ -140,6 +140,30 @@ try {
   const rrj = JSON.parse(rr.contents[0].text);
   console.log(`[e2e] readResource hnpf://state: connectedIP=${rrj.connectedIP}`);
 
+  const rb2 = await client.callTool({ name: "reboot_computer", arguments: { instant: true } });
+  console.log(`[e2e] reboot_computer: instant=${JSON.parse(rb2.content[0].text).instant}`);
+  const ct = await client.callTool({ name: "set_cd_tray", arguments: { open: true } });
+  console.log(`[e2e] set_cd_tray: open=${JSON.parse(ct.content[0].text).open}`);
+  const cl = await client.callTool({ name: "clear_terminal", arguments: {} });
+  console.log(`[e2e] clear_terminal: ${JSON.parse(cl.content[0].text).ok}`);
+  const an = await client.callTool({ name: "add_note", arguments: { text: "e2e note" } });
+  console.log(`[e2e] add_note: ${JSON.parse(an.content[0].text).text}`);
+  const sn = await client.callTool({ name: "scan_network", arguments: {} });
+  console.log(`[e2e] scan_network: ${JSON.parse(sn.content[0].text).target}`);
+  const pt = await client.callTool({ name: "probe_target", arguments: {} });
+  console.log(`[e2e] probe_target: ${JSON.parse(pt.content[0].text).target}`);
+  const ac = await client.callTool({ name: "get_achievements", arguments: {} });
+  const acj = JSON.parse(ac.content[0].text);
+  console.log(`[e2e] get_achievements: ${acj.count} 个 [${acj.unlocked.join(", ")}]`);
+
+  // run_batch 一致性：execute_command 的 waitMs 生效
+  const rbw = await client.callTool({
+    name: "run_batch",
+    arguments: { steps: [{ tool: "execute_command", args: { cmd: "ls", waitMs: 50 } }] },
+  });
+  const rbwj = JSON.parse(rbw.content[0].text);
+  console.log(`[e2e] run_batch waitMs: output.lines=${rbwj.results?.[0]?.result?.output?.lines?.length}`);
+
   console.log("[e2e] 全部通过 ✔");
 } finally {
   await client.close();

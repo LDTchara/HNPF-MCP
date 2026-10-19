@@ -26,10 +26,11 @@ public static partial class Executor
         var os = e.OS;
         var pipe = HnpfMcpBridgePlugin.Pipe;
 
-        // 每帧最多消费 8 个请求，防掉帧
+        // 每帧最多消费 8 个请求，防掉帧（多客户端：响应发回来源连接）
         int budget = 8;
-        while (budget-- > 0 && pipe.TryDequeueRequest(out var req))
+        while (budget-- > 0 && pipe.TryDequeueRequest(out var queued))
         {
+            var req = queued.Request;
             RpcResponse resp;
             try
             {
@@ -40,7 +41,7 @@ public static partial class Executor
                 HnpfMcpBridgePlugin.LogWarn($"Execute '{req.Method}' failed: {ex.Message}");
                 resp = RpcResponse.Fail(req, 500, ex.Message);
             }
-            pipe.PushResponse(resp.ToJsonLine());
+            pipe.PushResponse(resp.ToJsonLine(), queued.Client);
         }
 
         // 事件推送：连接切换
@@ -50,7 +51,7 @@ public static partial class Executor
             HnpfMcpBridgePlugin.LastConnectedIp = ip;
             var data = new Dictionary<string, object> { ["ip"] = ip };
             EventBuffer.Push(ip == null ? "node.disconnected" : "node.connected", data);
-            pipe.PushResponse(RpcEvent.ToJsonLine(
+            pipe.Broadcast(RpcEvent.ToJsonLine(
                 ip == null ? "node.disconnected" : "node.connected", data));
         }
 
@@ -59,7 +60,9 @@ public static partial class Executor
         if (missionTitle != HnpfMcpBridgePlugin.LastMissionTitle)
         {
             HnpfMcpBridgePlugin.LastMissionTitle = missionTitle;
-            EventBuffer.Push("mission.changed", new Dictionary<string, object> { ["title"] = missionTitle });
+            var missionData = new Dictionary<string, object> { ["title"] = missionTitle };
+            EventBuffer.Push("mission.changed", missionData);
+            pipe.Broadcast(RpcEvent.ToJsonLine("mission.changed", missionData));
         }
     }
 
@@ -103,6 +106,9 @@ public static partial class Executor
 
             case "daemon.list":
                 return GetDaemons(os, Str(p, "ip"));
+
+            case "achievements.list":
+                return AchievementsList(os);
 
             case "fs.list":
                 return ListFiles(os, Str(p, "ip"), Str(p, "path"));
@@ -185,6 +191,24 @@ public static partial class Executor
 
             case "firewall.solve":
                 return FirewallSolve(os, Str(p, "ip"), Str(p, "solution"));
+
+            case "game.reboot":
+                return VanillaReboot(os, BoolParam(p, "instant"));
+
+            case "game.cd_tray":
+                return VanillaCdTray(os, BoolParam(p, "open"));
+
+            case "game.clear_terminal":
+                return ClearTerminal(os);
+
+            case "game.add_note":
+                return AddNote(os, Str(p, "text"));
+
+            case "game.scan":
+                return VanillaScan(os);
+
+            case "game.probe":
+                return VanillaProbe(os);
 
             case "mission.submit":
                 return MissionSubmit(os, Str(p, "sender"), Str(p, "details"));

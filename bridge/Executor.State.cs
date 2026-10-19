@@ -134,6 +134,7 @@ public static partial class Executor
         return new Dictionary<string, object>
         {
             ["ip"] = comp.ip,
+            ["type"] = comp.GetType().Name,
             ["idName"] = comp.idName,
             ["name"] = comp.name,
             ["adminIP"] = comp.adminIP,
@@ -257,13 +258,43 @@ public static partial class Executor
             }
         }
         catch { }
+        var branches = new List<object>();
+        try
+        {
+            if (os.branchMissions != null)
+            {
+                foreach (var bm in os.branchMissions)
+                {
+                    if (bm == null) continue;
+                    int bt = 0, bc = 0;
+                    try
+                    {
+                        foreach (var g in bm.goals)
+                        {
+                            bt++;
+                            try { if (g.isComplete()) bc++; } catch { }
+                        }
+                    }
+                    catch { }
+                    branches.Add(new Dictionary<string, object>
+                    {
+                        ["title"] = bm.postingTitle,
+                        ["goalCount"] = bt,
+                        ["goalComplete"] = bc
+                    });
+                }
+            }
+        }
+        catch { }
+
         return new Dictionary<string, object>
         {
             ["active"] = true,
             ["title"] = m.postingTitle,
             ["goalCount"] = goals.Count,
             ["goalComplete"] = complete,
-            ["goals"] = goals
+            ["goals"] = goals,
+            ["branchMissions"] = branches
         };
     }
 

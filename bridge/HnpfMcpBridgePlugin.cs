@@ -23,9 +23,22 @@ public class HnpfMcpBridgePlugin : HacknetPlugin
 {
     public const string ModGUID = "com.HnpfMcp.Bridge";
     public const string ModName = "HNPF-MCP-Bridge";
-    public const string Version = "0.1.0";
-    /// <summary>构建自检版本：每次改动递增，ping/get_state 可见，用于确认游戏里跑的是不是最新 DLL。</summary>
-    public const string BuildVersion = "2026-10-18-2330";
+    public const string Version = "0.2.0";
+
+    /// <summary>构建自检版本：取 DLL 文件最后写入时间（每次构建自动更新），ping/get_state 可见，
+    /// 用于确认游戏里跑的是不是最新 DLL。</summary>
+    public static string BuildVersion
+    {
+        get
+        {
+            try
+            {
+                var loc = typeof(HnpfMcpBridgePlugin).Assembly.Location;
+                return string.IsNullOrEmpty(loc) ? "dev" : File.GetLastWriteTime(loc).ToString("yyyy-MM-dd-HHmm");
+            }
+            catch { return "unknown"; }
+        }
+    }
 
     private static HnpfMcpBridgePlugin _instance;
 
@@ -47,6 +60,7 @@ public class HnpfMcpBridgePlugin : HacknetPlugin
         "firewall.crack", "firewall.analyze", "firewall.solve",
         "flags.set", "flags.clear", "mission.submit", "hub.accept",
         "shell.drive", "terminal.type", "process.kill",
+        "game.reboot", "game.cd_tray", "game.add_note",
         "menu.enter_extension", "menu.load_extension_save",
     };
 
@@ -99,7 +113,7 @@ public class HnpfMcpBridgePlugin : HacknetPlugin
                     System.Threading.Thread.Sleep(300);
                     Config.Reload();
                     LoadSafetyConfig();
-                    Log.LogInfo($"[{ModName}] cfg 热加载: readOnly={_readOnly} allowed={_allowedCommands.Count} blocked={_blockedCommands.Count}");
+                    Log.LogInfo($"[{ModName}] cfg hot-reloaded: readOnly={_readOnly} allowed={_allowedCommands.Count} blocked={_blockedCommands.Count}");
                 }
                 catch (Exception ex) { Log.LogWarning($"[{ModName}] cfg reload failed: {ex.Message}"); }
             };
@@ -173,10 +187,11 @@ public class HnpfMcpBridgePlugin : HacknetPlugin
                 _token = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
                 tokenEntry.Value = _token;
                 Config.Save();
-                Log.LogWarning($"[{ModName}] 已自动生成随机 PipeToken（{_token.Substring(0, 8)}...）。" +
-                               "请在 MCP 宿主配置里设置环境变量 HNPF_TOKEN 为同一值后重启游戏（或设 Pipe.AutoToken=false 关闭自动生成）。");
+                Log.LogWarning($"[{ModName}] auto-generated random PipeToken ({_token.Substring(0, 8)}...). " +
+                               "Set env var HNPF_TOKEN to the same value in your MCP host config and restart the game " +
+                               "(or set Pipe.AutoToken=false to disable auto-generation).");
             }
-            catch { Log.LogWarning($"[{ModName}] 无法写回 Token 到 cfg，管道保持无鉴权"); }
+            catch { Log.LogWarning($"[{ModName}] failed to write Token back to cfg; pipe auth token kept in memory only"); }
         }
 
         LoadSafetyConfig();
@@ -206,15 +221,19 @@ public class HnpfMcpBridgePlugin : HacknetPlugin
             // P3：OS 加载完成时扫描所有插件的 [McpTool]（此时各模组已 Load 完毕）
             try { McpModuleScanner.Scan(); } catch (Exception ex) { Log.LogWarning($"[{ModName}] McpTool scan failed: {ex.Message}"); }
 
+            // 新会话：复位事件去重状态（否则同 IP/同任务标题不会重新触发事件）
+            LastConnectedIp = null;
+            LastMissionTitle = null;
+
             var data = new Dictionary<string, object> { ["ip"] = e.Os?.connectedIP };
             EventBuffer.Push("game.loaded", data);
-            Pipe?.PushResponse(RpcEvent.ToJsonLine("game.loaded", data));
+            Pipe?.Broadcast(RpcEvent.ToJsonLine("game.loaded", data));
         });
         EventManager<SaveEvent>.AddHandler(e =>
         {
             var data = new Dictionary<string, object> { ["file"] = e.Filename };
             EventBuffer.Push("game.saved", data);
-            Pipe?.PushResponse(RpcEvent.ToJsonLine("game.saved", data));
+            Pipe?.Broadcast(RpcEvent.ToJsonLine("game.saved", data));
         });
 
         // 3.5 命令执行事件（记入缓冲，供 events.get 增量拉取）
@@ -286,6 +305,12 @@ public class HnpfMcpBridgePlugin : HacknetPlugin
                 }
                 if (_readOnly) { os.write("mcp: read-only mode, command rejected"); return; }
                 var cmd = string.Join(" ", args.Skip(2));
+                var policy = CheckCommandPolicy(cmd);
+                if (policy != null)
+                {
+                    os.write($"mcp: {policy}");
+                    return;
+                }
                 os.runCommand(cmd);
                 os.write($"mcp: submitted '{cmd}'");
                 break;
